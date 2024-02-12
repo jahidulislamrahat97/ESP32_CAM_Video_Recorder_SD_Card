@@ -2,13 +2,7 @@
 
 
 #include "cameraTest.h"
-// #include "esp_http_server.h"
-
-
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// user edits here:
+#include"aviTest.h"
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -23,21 +17,14 @@
 
 #include <EEPROM.h>
 
-#include"aviTest.h"
-
-
-
-
 
 static const char vernum[] = "v60.4.7";
 char devname[30];
 String devstr = "desklens";
 
-// https://sites.google.com/a/usapiens.com/opnode/time-zones  -- find your timezone here
-String TIMEZONE = "GMT0BST,M3.5.0/01,M10.5.0/02";
-//String TIMEZONE = "MST7MDT,M3.2.0/2:00:00,M11.1.0/2:00:00";
-#define Lots_of_Stats 1
-#define blinking 0
+
+#define Lots_of_Stats 1 //may be debug (-_-)
+
 
 
 
@@ -45,17 +32,15 @@ String TIMEZONE = "GMT0BST,M3.5.0/01,M10.5.0/02";
 int avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
 int frame_interval = 0;   // record at full speed
 int speed_up_factor = 1;  // play at realtime
-int stream_delay = 500;   // minimum of 500 ms delay between frames
-int MagicNumber = 12;     // change this number to reset the eprom in your esp32 for file numbers
+// int stream_delay = 500;   // minimum of 500 ms delay between frames
+int MagicNumber = 12; //EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-bool configfile = false;
-bool InternetOff = true;
-bool reboot_now = false;
-bool restart_now = false;
+// bool configfile = false;
+bool reboot_now = false; // need modification then can delete
+bool restart_now = false; // need modification then can delete
 
-String czone;
 
 
 TaskHandle_t the_camera_loop_task;
@@ -107,8 +92,8 @@ long frame_start = 0;
 long frame_end = 0;
 long frame_total = 0;
 long frame_average = 0;
-long loop_average = 0;
-long loop_total = 0;
+// long loop_average = 0;
+// long loop_total = 0;
 long total_frame_data = 0;
 long last_frame_length = 0;
 // int done = 0;
@@ -171,10 +156,10 @@ int normal_jpg = 0;
 
 int file_number = 0;
 int file_group = 0;
-long boot_time = 0;
+// long boot_time = 0;
 
-long totalp;
-long totalw;
+long totalp; //may be total picture
+long totalw; //may be total wait time
 
 #define BUFFSIZE 512
 
@@ -1148,7 +1133,7 @@ void setup() {
   delay(200);
 
 
-  boot_time = millis();
+  // boot_time = millis();
 
 
   Serial.println("  End of setup()\n\n");
@@ -1244,7 +1229,6 @@ void the_camera_loop(void *pvParameter) {
       wait_for_cam += millis() - wait_for_cam_start;
       xSemaphoreGive(sd_go);  // trigger sd write to write first frame
 
-      if (blinking) digitalWrite(33, frame_cnt % 2);  // blink
 
       ///////////////////  END THE MOVIE //////////////////
     } else if (restart_now || reboot_now || (frame_cnt > 0 && start_record == 0) || millis() > (avi_start_time + avi_length * 1000)) {  // end the avi
@@ -1261,7 +1245,6 @@ void the_camera_loop(void *pvParameter) {
 
       xSemaphoreGive(sd_go);  // save final frame of movie
 
-      if (blinking) digitalWrite(33, frame_cnt % 2);
 
       xSemaphoreTake(wait_for_sd, portMAX_DELAY);  // wait for final frame of movie to be written
 
@@ -1270,7 +1253,6 @@ void the_camera_loop(void *pvParameter) {
 
       end_avi();  // end the movie
 
-      if (blinking) digitalWrite(33, HIGH);  // light off
 
       delete_old_stuff_flag = 1;
       delay(50);
@@ -1318,8 +1300,7 @@ void the_camera_loop(void *pvParameter) {
       //}
       wait_for_cam += millis() - wait_for_cam_start;
 
-      if (blinking) digitalWrite(33, frame_cnt % 2);
-
+      
       if (frame_cnt % 100 == 10) {  // print some status every 100 frames
         if (frame_cnt == 10) {
           bytes_before_last_100_frames = movi_size;
