@@ -93,16 +93,16 @@ int most_recent_avg_framesize = 0;
 
 uint8_t *framebuffer;
 uint8_t *framebuffer2;
-uint8_t *framebuffer3;
+// uint8_t *framebuffer3;
 
 int framebuffer_len;
 int framebuffer2_len;
-int framebuffer3_len;
+// int framebuffer3_len;
 long framebuffer_time = 0;
 long framebuffer2_time = 0;
-long framebuffer3_time = 0;
+// long framebuffer3_time = 0;
 
-int first = 1;
+// int first = 1;
 long frame_start = 0;
 long frame_end = 0;
 long frame_total = 0;
@@ -111,15 +111,15 @@ long loop_average = 0;
 long loop_total = 0;
 long total_frame_data = 0;
 long last_frame_length = 0;
-int done = 0;
+// int done = 0;
 long avi_start_time = 0;
 long avi_end_time = 0;
 int start_record = 0;
-int start_record_2nd_opinion = -2;
-int start_record_1st_opinion = -1;
+// int start_record_2nd_opinion = -2;
+// int start_record_1st_opinion = -1;
 
-int we_are_already_stopped = 1;
-long total_delay = 0;
+// int we_are_already_stopped = 1;
+// long total_delay = 0;
 long bytes_before_last_100_frames = 0;
 long time_before_last_100_frames = 0;
 
@@ -128,8 +128,8 @@ long time_in_camera = 0;
 long time_in_sd = 0;
 long time_in_good = 0;
 long time_total = 0;
-long time_in_web1 = 0;
-long time_in_web2 = 0;
+// long time_in_web1 = 0;
+// long time_in_web2 = 0;
 long delay_wait_for_sd = 0;
 long wait_for_cam = 0;
 
@@ -801,8 +801,8 @@ static void start_avi() {
   time_in_sd = 0;
   time_in_good = 0;
   time_total = 0;
-  time_in_web1 = 0;
-  time_in_web2 = 0;
+  // time_in_web1 = 0;
+  // time_in_web2 = 0;
   delay_wait_for_sd = 0;
   wait_for_cam = 0;
 
@@ -1072,16 +1072,16 @@ static void end_avi() {
   Serial.printf("Time in camera  %10dms, %4.1f%%\n", time_in_camera, 100.0 * time_in_camera / time_total);
   Serial.printf("waiting for sd  %10dms, %4.1f%%\n", delay_wait_for_sd, 100.0 * delay_wait_for_sd / time_total);
   Serial.printf("Time in sd      %10dms, %4.1f%%\n", time_in_sd, 100.0 * time_in_sd / time_total);
-  Serial.printf("web (core 1)    %10dms, %4.1f%%\n", time_in_web1, 100.0 * time_in_web1 / time_total);
-  Serial.printf("web (core 0)    %10dms, %4.1f%%\n", time_in_web2, 100.0 * time_in_web2 / time_total);
+  // Serial.printf("web (core 1)    %10dms, %4.1f%%\n", time_in_web1, 100.0 * time_in_web1 / time_total);
+  // Serial.printf("web (core 0)    %10dms, %4.1f%%\n", time_in_web2, 100.0 * time_in_web2 / time_total);
   Serial.printf("time total      %10dms, %4.1f%%\n", time_total, 100.0 * time_total / time_total);
 
   logfile.printf("waiting for cam %10dms, %4.1f%%\n", wait_for_cam, 100.0 * wait_for_cam / time_total);
   logfile.printf("Time in camera  %10dms, %4.1f%%\n", time_in_camera, 100.0 * time_in_camera / time_total);
   logfile.printf("waiting for sd  %10dms, %4.1f%%\n", delay_wait_for_sd, 100.0 * delay_wait_for_sd / time_total);
   logfile.printf("Time in sd      %10dms, %4.1f%%\n", time_in_sd, 100.0 * time_in_sd / time_total);
-  logfile.printf("web (core 1)    %10dms, %4.1f%%\n", time_in_web1, 100.0 * time_in_web1 / time_total);
-  logfile.printf("web (core 0)    %10dms, %4.1f%%\n", time_in_web2, 100.0 * time_in_web2 / time_total);
+  // logfile.printf("web (core 1)    %10dms, %4.1f%%\n", time_in_web1, 100.0 * time_in_web1 / time_total);
+  // logfile.printf("web (core 0)    %10dms, %4.1f%%\n", time_in_web2, 100.0 * time_in_web2 / time_total);
   logfile.printf("time total      %10dms, %4.1f%%\n", time_total, 100.0 * time_total / time_total);
 
   logfile.flush();
@@ -1132,7 +1132,7 @@ void setup() {
 
   framebuffer = (uint8_t *)ps_malloc(512 * 1024);   // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
   framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
-  framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  // framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
 
   Serial.println("Creating the_camera_loop_task");
 
@@ -1186,8 +1186,8 @@ void the_camera_loop(void *pvParameter) {
   Serial.println(uxTaskPriorityGet(NULL));
 
   frame_cnt = 0;
-  start_record_2nd_opinion = digitalRead(12);
-  start_record_1st_opinion = digitalRead(12);
+  // start_record_2nd_opinion = digitalRead(12);
+  // start_record_1st_opinion = digitalRead(12);
   start_record = 1;
 
   delay(1000);
@@ -1213,7 +1213,7 @@ void the_camera_loop(void *pvParameter) {
 
       //Serial.println("Ready to start");
 
-      we_are_already_stopped = 0;
+      // we_are_already_stopped = 0;
 
       //delete_old_stuff(); // move to loop
 
@@ -1336,7 +1336,7 @@ void the_camera_loop(void *pvParameter) {
             logfile.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
           }
 
-          total_delay = 0;
+          // total_delay = 0;
 
           bytes_before_last_100_frames = movi_size;
           time_before_last_100_frames = millis();
