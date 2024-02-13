@@ -22,22 +22,14 @@ static const char vernum[] = "v60.4.7";
 char devname[30];
 String devstr = "desklens";
 
-
 #define Lots_of_Stats 1 //may be debug (-_-)
 
 
-
-
-// int buffersconfig = 3;
 int avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
 int frame_interval = 0;   // record at full speed
 int speed_up_factor = 1;  // play at realtime
-// int stream_delay = 500;   // minimum of 500 ms delay between frames
 int MagicNumber = 12; //EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// bool configfile = false;
 bool reboot_now = false; // need modification then can delete
 bool restart_now = false; // need modification then can delete
 
@@ -48,7 +40,7 @@ TaskHandle_t the_sd_loop_task;
 
 static SemaphoreHandle_t wait_for_sd;
 static SemaphoreHandle_t sd_go;
-SemaphoreHandle_t baton;
+SemaphoreHandle_t baton; // need edit
 
 long current_frame_time;
 long last_frame_time;
@@ -66,8 +58,6 @@ uint8_t framebuffer_static[fbs * 1024 + 20];
 
 // Camera_Frame_Buffer_t cam_frame;
 
-// cam_frame.fb_curr = NULL;
-// cam_frame.fb_next = NULL;
 
 camera_fb_t *fb_curr = NULL;
 camera_fb_t *fb_next = NULL;
@@ -78,33 +68,24 @@ int most_recent_avg_framesize = 0;
 
 uint8_t *framebuffer;
 uint8_t *framebuffer2;
-// uint8_t *framebuffer3;
 
 int framebuffer_len;
 int framebuffer2_len;
-// int framebuffer3_len;
 long framebuffer_time = 0;
 long framebuffer2_time = 0;
-// long framebuffer3_time = 0;
 
-// int first = 1;
 long frame_start = 0;
 long frame_end = 0;
 long frame_total = 0;
 long frame_average = 0;
-// long loop_average = 0;
-// long loop_total = 0;
+
 long total_frame_data = 0;
 long last_frame_length = 0;
-// int done = 0;
 long avi_start_time = 0;
 long avi_end_time = 0;
 int start_record = 0;
-// int start_record_2nd_opinion = -2;
-// int start_record_1st_opinion = -1;
 
-// int we_are_already_stopped = 1;
-// long total_delay = 0;
+
 long bytes_before_last_100_frames = 0;
 long time_before_last_100_frames = 0;
 
@@ -113,8 +94,6 @@ long time_in_camera = 0;
 long time_in_sd = 0;
 long time_in_good = 0;
 long time_total = 0;
-// long time_in_web1 = 0;
-// long time_in_web2 = 0;
 long delay_wait_for_sd = 0;
 long wait_for_cam = 0;
 
@@ -156,7 +135,6 @@ int normal_jpg = 0;
 
 int file_number = 0;
 int file_group = 0;
-// long boot_time = 0;
 
 long totalp; //may be total picture
 long totalw; //may be total wait time
@@ -174,9 +152,9 @@ unsigned long idx_offset = 0;
 
 uint8_t zero_buf[4] = { 0x00, 0x00, 0x00, 0x00 };
 uint8_t dc_buf[4] = { 0x30, 0x30, 0x64, 0x63 };  // "00dc"
-uint8_t dc_and_zero_buf[8] = { 0x30, 0x30, 0x64, 0x63, 0x00, 0x00, 0x00, 0x00 };
+// uint8_t dc_and_zero_buf[8] = { 0x30, 0x30, 0x64, 0x63, 0x00, 0x00, 0x00, 0x00 };
 
-uint8_t avi1_buf[4] = { 0x41, 0x56, 0x49, 0x31 };  // "AVI1"
+// uint8_t avi1_buf[4] = { 0x41, 0x56, 0x49, 0x31 };  // "AVI1"
 uint8_t idx1_buf[4] = { 0x69, 0x64, 0x78, 0x31 };  // "idx1"
 
 
