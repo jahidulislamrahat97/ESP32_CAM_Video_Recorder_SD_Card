@@ -31,6 +31,23 @@ int camera_frame_size = FRAMESIZE_UXGA;
 int camera_jpeg_quality = 5;
 int camera_frame_buffer_count = 3;
 
+
+typedef struct Camera_Frame_t
+{
+  uint8_t *framebuffer;
+  int framebuffer_len;
+  unsigned long framebuffer_time;
+  unsigned long current_frame_time;
+  unsigned long last_frame_time;
+  int frame_interval;
+  float most_recent_fps;
+  int most_recent_avg_framesize;
+
+  bool on_recording;
+
+} Camera_Frame_t;
+
+
 static void config_camera()
 {
 

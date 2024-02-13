@@ -58,4 +58,18 @@ const int avi_header[AVIOFFSET] PROGMEM = {
 };
 
 
+
+
+typedef struct AVI_Frame_t
+{
+  int avi_length;
+  unsigned long avi_start_time;
+  unsigned long avi_end_time;
+  int speed_up_factor;
+
+} AVI_Frame_t;
+
+
+
+
 #endif
