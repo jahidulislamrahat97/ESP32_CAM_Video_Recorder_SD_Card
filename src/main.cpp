@@ -25,10 +25,6 @@ String devstr = "desklens";
 #define Lots_of_Stats 1 //may be debug (-_-)
 
 
-int avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
-int frame_interval = 0;   // record at full speed
-int speed_up_factor = 1;  // play at realtime
-int MagicNumber = 12; //EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
 
 bool reboot_now = false; // need modification then can delete
 bool restart_now = false; // need modification then can delete
@@ -42,10 +38,6 @@ static SemaphoreHandle_t wait_for_sd;
 static SemaphoreHandle_t sd_go;
 SemaphoreHandle_t baton; // need edit
 
-long current_frame_time;
-long last_frame_time;
-
-
 // https://github.com/espressif/esp32-camera/issues/182
 #define fbs 8  // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
 uint8_t framebuffer_static[fbs * 1024 + 20];
@@ -55,10 +47,16 @@ typedef struct Camera_Frame_t
   uint8_t *framebuffer;
   int framebuffer_len;
   unsigned long framebuffer_time;
+  unsigned long current_frame_time;
+  unsigned long last_frame_time;
 } Camera_Frame_t;
 
 typedef struct AVI_Frame_t
 {
+  int avi_length;
+  unsigned long avi_start_time;
+  unsigned long avi_end_time ;
+  bool start_record;
 
 } AVI_Frame_t;
 
@@ -68,16 +66,15 @@ AVI_Frame_t avi_frm;
 camera_fb_t *fb_curr = NULL;
 camera_fb_t *fb_next = NULL;
 
-static esp_err_t cam_err;
+
+// int avi_frm.avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
+int frame_interval = 0;   // record at full speed
+int speed_up_factor = 1;  // play at realtime
+int MagicNumber = 12; //EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
+
+
 float most_recent_fps = 0;
 int most_recent_avg_framesize = 0;
-
-
-long total_frame_data = 0;
-long last_frame_length = 0;
-long avi_start_time = 0;
-long avi_end_time = 0;
-int start_record = 0;
 
 
 long bytes_before_last_100_frames = 0;
@@ -420,7 +417,7 @@ static esp_err_t init_sdcard() {
 //   framesizeconfig = cframesizeconfig;
 //   camera_jpeg_quality = cqualityconfig;
 //   buffersconfig = cbuffersconfig;
-//   avi_length = clength;
+//   avi_frm.avi_length = clength;
 //   frame_interval = cinterval;
 //   speed_up_factor = cspeedup;
 //   stream_delay = cstreamdelay;
@@ -628,7 +625,7 @@ camera_fb_t *get_good_jpeg() {
     logfile.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
     delay(1000);
 
-    start_record = 0;
+    avi_frm.start_record = 0;
     //reboot_now = true;
   }
   return fb;
@@ -736,7 +733,7 @@ static void start_avi() {
   avifile.seek(AVIOFFSET, SeekSet);
 
   Serial.print(F("\nRecording "));
-  Serial.print(avi_length);
+  Serial.print(avi_frm.avi_length);
   Serial.println(" seconds.");
 
   startms = millis();
@@ -1063,6 +1060,15 @@ void setup() {
 
 
   cam_frm.framebuffer_time = 0;
+  cam_frm.current_frame_time = 0;
+  cam_frm.last_frame_time = 0;
+
+  avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC; 
+  
+  avi_frm.avi_start_time = 0;
+  avi_frm.avi_end_time = 0;
+  avi_frm.start_record = false;
+
 
   Serial.println("                                    ");
   Serial.println("-------------------------------------");
@@ -1147,19 +1153,19 @@ void the_camera_loop(void *pvParameter) {
   frame_cnt = 0;
   // start_record_2nd_opinion = digitalRead(12);
   // start_record_1st_opinion = digitalRead(12);
-  start_record = 1;
+  avi_frm.start_record = 1;
 
   delay(1000);
 
   while (1) {
 
-    // if (frame_cnt == 0 && start_record == 0)  // do nothing
-    // if (frame_cnt == 0 && start_record == 1)  // start a movie
-    // if (frame_cnt > 0 && start_record == 0)   // stop the movie
-    // if (frame_cnt > 0 && start_record != 0)   // another frame
+    // if (frame_cnt == 0 && avi_frm.start_record == 0)  // do nothing
+    // if (frame_cnt == 0 && avi_frm.start_record == 1)  // start a movie
+    // if (frame_cnt > 0 && avi_frm.start_record == 0)   // stop the movie
+    // if (frame_cnt > 0 && avi_frm.start_record != 0)   // another frame
 
     ///////////////////  NOTHING TO DO //////////////////
-    // if (frame_cnt == 0 && start_record == 0) {
+    // if (frame_cnt == 0 && avi_frm.start_record == 0) {
 
     //   // Serial.println("Do nothing");
     //   if (we_are_already_stopped == 0) Serial.println("\n\nDisconnect Pin 12 from GND to start recording.\n\n");
@@ -1168,7 +1174,7 @@ void the_camera_loop(void *pvParameter) {
 
     //   ///////////////////  START A MOVIE  //////////////////
     // } else
-    if (frame_cnt == 0 && start_record == 1) {
+    if (frame_cnt == 0 && avi_frm.start_record == 1) {
 
       //Serial.println("Ready to start");
 
@@ -1176,11 +1182,11 @@ void the_camera_loop(void *pvParameter) {
 
       //delete_old_stuff(); // move to loop
 
-      avi_start_time = millis();
-      Serial.printf("\nStart the avi ... at %d\n", avi_start_time);
-      Serial.printf("Framesize %d, camera_quality %d, length %d seconds\n\n", camera_framesize, camera_quality, avi_length);
-      logfile.printf("\nStart the avi ... at %d\n", avi_start_time);
-      logfile.printf("Framesize %d, camera_quality %d, length %d seconds\n\n", camera_framesize, camera_quality, avi_length);
+      avi_frm.avi_start_time = millis();
+      Serial.printf("\nStart the avi ... at %d\n", avi_frm.avi_start_time);
+      Serial.printf("Framesize %d, camera_quality %d, length %d seconds\n\n", camera_framesize, camera_quality, avi_frm.avi_length);
+      logfile.printf("\nStart the avi ... at %d\n", avi_frm.avi_start_time);
+      logfile.printf("Framesize %d, camera_quality %d, length %d seconds\n\n", camera_framesize, camera_quality, avi_frm.avi_length);
       logfile.flush();
 
       frame_cnt++;
@@ -1205,7 +1211,7 @@ void the_camera_loop(void *pvParameter) {
 
 
       ///////////////////  END THE MOVIE //////////////////
-    } else if (restart_now || reboot_now || (frame_cnt > 0 && start_record == 0) || millis() > (avi_start_time + avi_length * 1000)) {  // end the avi
+    } else if (restart_now || reboot_now || (frame_cnt > 0 && avi_frm.start_record == 0) || millis() > (avi_frm.avi_start_time + avi_frm.avi_length * 1000)) {  // end the avi
 
       Serial.println("End the Avi");
       restart_now = false;
@@ -1231,25 +1237,25 @@ void the_camera_loop(void *pvParameter) {
       delete_old_stuff_flag = 1;
       delay(50);
 
-      avi_end_time = millis();
+      avi_frm.avi_end_time = millis();
 
-      float fps = 1.0 * frame_cnt / ((avi_end_time - avi_start_time) / 1000);
+      float fps = 1.0 * frame_cnt / ((avi_frm.avi_end_time - avi_frm.avi_start_time) / 1000);
 
-      Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_end_time, avi_end_time - avi_start_time, fps);
-      logfile.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_end_time, avi_end_time - avi_start_time, fps);
+      Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_frm.avi_end_time, avi_frm.avi_end_time - avi_frm.avi_start_time, fps);
+      logfile.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_frm.avi_end_time, avi_frm.avi_end_time - avi_frm.avi_start_time, fps);
 
       if (!reboot_now) frame_cnt = 0;  // start recording again on the next loop
 
       ///////////////////  ANOTHER FRAME  //////////////////
-    } else if (frame_cnt > 0 && start_record != 0) {  // another frame of the avi
+    } else if (frame_cnt > 0 && avi_frm.start_record != 0) {  // another frame of the avi
 
       //Serial.println("Another frame");
 
-      current_frame_time = millis();
-      if (current_frame_time - last_frame_time < frame_interval) {
-        delay(frame_interval - (current_frame_time - last_frame_time));  // delay for timelapse
+      cam_frm.current_frame_time = millis();
+      if (cam_frm.current_frame_time - cam_frm.last_frame_time < frame_interval) {
+        delay(frame_interval - (cam_frm.current_frame_time - cam_frm.last_frame_time));  // delay for timelapse
       }
-      last_frame_time = millis();
+      cam_frm.last_frame_time = millis();
 
       frame_cnt++;
 
@@ -1287,8 +1293,8 @@ void the_camera_loop(void *pvParameter) {
           most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
 
           if (Lots_of_Stats && frame_cnt < 1011) {
-            Serial.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
-            logfile.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
+            Serial.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
+            logfile.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
           }
 
           // total_delay = 0;
