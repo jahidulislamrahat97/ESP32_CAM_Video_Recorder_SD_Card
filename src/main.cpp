@@ -1,8 +1,8 @@
 #include <Arduino.h>
 
-
 #include "cameraTest.h"
-#include"aviTest.h"
+#include "aviTest.h"
+#include "sdTest.h"
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -14,22 +14,16 @@
 #include "soc/cpu.h"
 #include "soc/rtc_cntl_reg.h"
 
-
 #include <EEPROM.h>
-
 
 static const char vernum[] = "v60.4.7";
 char devname[30];
 String devstr = "desklens";
 
-#define Lots_of_Stats 1 //may be debug (-_-)
+#define Lots_of_Stats 1 // may be debug (-_-)
 
-
-
-bool reboot_now = false; // need modification then can delete
+bool reboot_now = false;  // need modification then can delete
 bool restart_now = false; // need modification then can delete
-
-
 
 TaskHandle_t the_camera_loop_task;
 TaskHandle_t the_sd_loop_task;
@@ -39,7 +33,7 @@ static SemaphoreHandle_t sd_go;
 SemaphoreHandle_t baton; // need edit
 
 // https://github.com/espressif/esp32-camera/issues/182
-#define fbs 8  // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
+#define fbs 8 // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
 uint8_t framebuffer_static[fbs * 1024 + 20];
 
 typedef struct Camera_Frame_t
@@ -49,14 +43,18 @@ typedef struct Camera_Frame_t
   unsigned long framebuffer_time;
   unsigned long current_frame_time;
   unsigned long last_frame_time;
+  int frame_interval;
+  float most_recent_fps;
+  int most_recent_avg_framesize;
 } Camera_Frame_t;
 
 typedef struct AVI_Frame_t
 {
   int avi_length;
   unsigned long avi_start_time;
-  unsigned long avi_end_time ;
+  unsigned long avi_end_time;
   bool start_record;
+  int speed_up_factor;
 
 } AVI_Frame_t;
 
@@ -66,16 +64,13 @@ AVI_Frame_t avi_frm;
 camera_fb_t *fb_curr = NULL;
 camera_fb_t *fb_next = NULL;
 
-
 // int avi_frm.avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
-int frame_interval = 0;   // record at full speed
-int speed_up_factor = 1;  // play at realtime
-int MagicNumber = 12; //EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
+// int cam_frm.frame_interval = 0;   // record at full speed
+// int avi_frm.speed_up_factor = 1;  // play at realtime
+int MagicNumber = 12; // EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
 
-
-float most_recent_fps = 0;
-int most_recent_avg_framesize = 0;
-
+// float cam_frm.most_recent_fps = 0;
+// int cam_frm.most_recent_avg_framesize = 0;
 
 long bytes_before_last_100_frames = 0;
 long time_before_last_100_frames = 0;
@@ -96,7 +91,6 @@ int gmdelay;
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //  Avi Writer Stuff here
-
 
 // MicroSD
 #include "driver/sdmmc_host.h"
@@ -127,37 +121,32 @@ int normal_jpg = 0;
 int file_number = 0;
 int file_group = 0;
 
-long totalp; //may be total picture
-long totalw; //may be total wait time
+long totalp; // may be total picture
+long totalw; // may be total wait time
 
 #define BUFFSIZE 512
 
 uint8_t buf[BUFFSIZE];
 
-
-
-
 unsigned long movi_size = 0;
 unsigned long jpeg_size = 0;
 unsigned long idx_offset = 0;
 
-uint8_t zero_buf[4] = { 0x00, 0x00, 0x00, 0x00 };
-uint8_t dc_buf[4] = { 0x30, 0x30, 0x64, 0x63 };  // "00dc"
+uint8_t zero_buf[4] = {0x00, 0x00, 0x00, 0x00};
+uint8_t dc_buf[4] = {0x30, 0x30, 0x64, 0x63}; // "00dc"
 // uint8_t dc_and_zero_buf[8] = { 0x30, 0x30, 0x64, 0x63, 0x00, 0x00, 0x00, 0x00 };
 
 // uint8_t avi1_buf[4] = { 0x41, 0x56, 0x49, 0x31 };  // "AVI1"
-uint8_t idx1_buf[4] = { 0x69, 0x64, 0x78, 0x31 };  // "idx1"
+uint8_t idx1_buf[4] = {0x69, 0x64, 0x78, 0x31}; // "idx1"
 
-
-
-
-
-struct eprom_data {
+struct eprom_data
+{
   int eprom_good;
   int file_group;
 };
 
-void do_eprom_write() {
+void do_eprom_write()
+{
 
   eprom_data ed;
   ed.eprom_good = MagicNumber;
@@ -171,62 +160,76 @@ void do_eprom_write() {
   EEPROM.end();
 }
 
-
-void deleteFolderOrFile(const char *val) {
+void deleteFolderOrFile(const char *val)
+{
   // Function provided by user @gemi254
   Serial.printf("Deleting : %s\n", val);
   File f = SD_MMC.open("/" + String(val));
-  if (!f) {
+  if (!f)
+  {
     Serial.printf("Failed to open %s\n", val);
     return;
   }
 
-  if (f.isDirectory()) {
+  if (f.isDirectory())
+  {
     File file = f.openNextFile();
-    while (file) {
-      if (file.isDirectory()) {
+    while (file)
+    {
+      if (file.isDirectory())
+      {
         Serial.print("  DIR : ");
         Serial.println(file.name());
-      } else {
+      }
+      else
+      {
         Serial.print("  FILE: ");
         Serial.print(file.name());
         Serial.print("  SIZE: ");
         Serial.print(file.size());
-        if (SD_MMC.remove(file.name())) {
+        if (SD_MMC.remove(file.name()))
+        {
           Serial.println(" deleted.");
-        } else {
+        }
+        else
+        {
           Serial.println(" FAILED.");
         }
       }
       file = f.openNextFile();
     }
     f.close();
-    //Remove the dir
-    if (SD_MMC.rmdir("/" + String(val))) {
+    // Remove the dir
+    if (SD_MMC.rmdir("/" + String(val)))
+    {
       Serial.printf("Dir %s removed\n", val);
-    } else {
+    }
+    else
+    {
       Serial.println("Remove dir failed");
     }
-
-  } else {
-    //Remove the file
-    if (SD_MMC.remove("/" + String(val))) {
+  }
+  else
+  {
+    // Remove the file
+    if (SD_MMC.remove("/" + String(val)))
+    {
       Serial.printf("File %s deleted\n", val);
-    } else {
+    }
+    else
+    {
       Serial.println("Delete failed");
     }
   }
 }
 
-
 //  data structure from here https://github.com/s60sc/ESP32-CAM_MJPEG2SD/blob/master/avi.cpp, extended for ov5640
-
-
 
 //
 // Writes an uint32_t in Big Endian at current file position
 //
-static void inline print_quartet(unsigned long i, File fd) {
+static void inline print_quartet(unsigned long i, File fd)
+{
 
   uint8_t y[4];
   y[0] = i % 0x100;
@@ -239,7 +242,8 @@ static void inline print_quartet(unsigned long i, File fd) {
 //
 // Writes 2 uint32_t in Big Endian at current file position
 //
-static void inline print_2quartet(unsigned long i, unsigned long j, File fd) {
+static void inline print_2quartet(unsigned long i, unsigned long j, File fd)
+{
 
   uint8_t y[8];
   y[0] = i % 0x100;
@@ -253,72 +257,37 @@ static void inline print_2quartet(unsigned long i, unsigned long j, File fd) {
   size_t i1_err = fd.write(y, 8);
 }
 
-//
-// if we have no camera, or sd card, then flash rear led on and off to warn the human SOS - SOS
-//
-// void major_fail() {
-
-//   Serial.println(" ");
-//   logfile.close();
-
-//   for (int i = 0; i < 10; i++) {  // 10 loops or about 100 seconds then reboot
-//     for (int j = 0; j < 3; j++) {
-//       digitalWrite(33, LOW);
-//       delay(150);
-//       digitalWrite(33, HIGH);
-//       delay(150);
-//     }
-//     delay(1000);
-
-//     for (int j = 0; j < 3; j++) {
-//       digitalWrite(33, LOW);
-//       delay(500);
-//       digitalWrite(33, HIGH);
-//       delay(500);
-//     }
-//     delay(1000);
-//     Serial.print("Major Fail  ");
-//     Serial.print(i);
-//     Serial.print(" / ");
-//     Serial.println(10);
-//   }
-
-//   ESP.restart();
-// }
-
-
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-
-
-static esp_err_t init_sdcard() {
+static esp_err_t init_sdcard()
+{
 
   int succ = SD_MMC.begin("/sdcard", true);
-  if (succ) {
+  if (succ)
+  {
     Serial.printf("SD_MMC Begin: %d\n", succ);
     uint8_t cardType = SD_MMC.cardType();
     Serial.print("SD_MMC Card Type: ");
-    if (cardType == CARD_MMC) {
+    if (cardType == CARD_MMC)
+    {
       Serial.println("MMC");
-    } else if (cardType == CARD_SD) {
+    }
+    else if (cardType == CARD_SD)
+    {
       Serial.println("SDSC");
-    } else if (cardType == CARD_SDHC) {
+    }
+    else if (cardType == CARD_SDHC)
+    {
       Serial.println("SDHC");
-    } else {
+    }
+    else
+    {
       Serial.println("UNKNOWN");
     }
 
     uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
     Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
-
-  } else {
+  }
+  else
+  {
     Serial.printf("Failed to mount SD card VFAT filesystem. \n");
     Serial.println("Do you have an SD Card installed?");
     Serial.println("Check pin 12 and 13, not grounded, or grounded with 10k resistors!\n\n");
@@ -384,8 +353,6 @@ static esp_err_t init_sdcard() {
 //   int cinternet = 0;
 //   String czone = "GMT";
 
-
-
 //   Serial.printf("=========   Data fram config.txt and defaults  =========\n");
 //   Serial.printf("Name %s\n", cname);
 //   logfile.printf("Name %s\n", cname);
@@ -411,15 +378,14 @@ static esp_err_t init_sdcard() {
 //   logfile.printf("Internet %d\n", cinternet);
 //   Serial.printf("Zone len %d, %s\n", czone.length(), czone.c_str());  //logfile.printf("Zone len %d, %s\n", czone.length(), czone);
 
-
 //   framesize = cframesize;
 //   quality = cquality;
 //   framesizeconfig = cframesizeconfig;
 //   camera_jpeg_quality = cqualityconfig;
 //   buffersconfig = cbuffersconfig;
 //   avi_frm.avi_length = clength;
-//   frame_interval = cinterval;
-//   speed_up_factor = cspeedup;
+//   cam_frm.frame_interval = cinterval;
+//   avi_frm.speed_up_factor = cspeedup;
 //   stream_delay = cstreamdelay;
 //   configfile = true;
 //   TIMEZONE = czone;
@@ -427,35 +393,42 @@ static esp_err_t init_sdcard() {
 //   cname.toCharArray(devname, cname.length() + 1);
 // }
 
-
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 //  delete_old_stuff() - delete oldest files to free diskspace
 //
 
-void listDir(const char *dirname, uint8_t levels) {
+void listDir(const char *dirname, uint8_t levels)
+{
 
   Serial.printf("Listing directory: %s\n", "/");
 
   File root = SD_MMC.open("/");
-  if (!root) {
+  if (!root)
+  {
     Serial.println("Failed to open directory");
     return;
   }
-  if (!root.isDirectory()) {
+  if (!root.isDirectory())
+  {
     Serial.println("Not a directory");
     return;
   }
 
   File filex = root.openNextFile();
-  while (filex) {
-    if (filex.isDirectory()) {
+  while (filex)
+  {
+    if (filex.isDirectory())
+    {
       Serial.print("  DIR : ");
       Serial.println(filex.name());
-      if (levels) {
+      if (levels)
+      {
         listDir(filex.name(), levels - 1);
       }
-    } else {
+    }
+    else
+    {
       Serial.print("  FILE: ");
       Serial.print(filex.name());
       Serial.print("  SIZE: ");
@@ -465,20 +438,25 @@ void listDir(const char *dirname, uint8_t levels) {
   }
 }
 
-void delete_old_stuff() {
+void delete_old_stuff()
+{
 
   Serial.printf("Total space: %lluMB\n", SD_MMC.totalBytes() / (1024 * 1024));
   Serial.printf("Used space: %lluMB\n", SD_MMC.usedBytes() / (1024 * 1024));
 
-  //listDir( "/", 0);
+  // listDir( "/", 0);
 
   float full = 1.0 * SD_MMC.usedBytes() / SD_MMC.totalBytes();
   ;
-  if (full < 0.8) {
+  if (full < 0.8)
+  {
     Serial.printf("Nothing deleted, %.1f%% disk full\n", 100.0 * full);
-  } else {
+  }
+  else
+  {
     Serial.printf("Disk is %.1f%% full ... deleting oldest file\n", 100.0 * full);
-    while (full > 0.8) {
+    while (full > 0.8)
+    {
 
       double del_number = 999999999;
       char del_numbername[50];
@@ -487,30 +465,39 @@ void delete_old_stuff() {
 
       File file = f.openNextFile();
 
-      while (file) {
-        //Serial.println(file.name());
-        if (!file.isDirectory()) {
+      while (file)
+      {
+        // Serial.println(file.name());
+        if (!file.isDirectory())
+        {
 
           char foldname[50];
           strcpy(foldname, file.name());
-          for (int x = 0; x < 50; x++) {
-            if ((foldname[x] >= 0x30 && foldname[x] <= 0x39) || foldname[x] == 0x2E) {
-            } else {
-              if (foldname[x] != 0) foldname[x] = 0x20;
+          for (int x = 0; x < 50; x++)
+          {
+            if ((foldname[x] >= 0x30 && foldname[x] <= 0x39) || foldname[x] == 0x2E)
+            {
+            }
+            else
+            {
+              if (foldname[x] != 0)
+                foldname[x] = 0x20;
             }
           }
 
           double i = atof(foldname);
-          if (i > 0 && i < del_number) {
+          if (i > 0 && i < del_number)
+          {
             strcpy(del_numbername, file.name());
             del_number = i;
           }
-          //Serial.printf("Name is %s, number is %f\n", foldname, i);
+          // Serial.printf("Name is %s, number is %f\n", foldname, i);
         }
         file = f.openNextFile();
       }
       Serial.printf("lowest is Name is %s, number is %f\n", del_numbername, del_number);
-      if (del_number < 999999999) {
+      if (del_number < 999999999)
+      {
         deleteFolderOrFile(del_numbername);
       }
       full = 1.0 * SD_MMC.usedBytes() / SD_MMC.totalBytes();
@@ -524,24 +511,29 @@ void delete_old_stuff() {
 //
 //  get_good_jpeg()  - take a picture and make sure it has a good jpeg
 //
-camera_fb_t *get_good_jpeg() {
+camera_fb_t *get_good_jpeg()
+{
 
   camera_fb_t *fb;
 
   long start;
   int failures = 0;
 
-  do {
+  do
+  {
     int fblen = 0;
     int foundffd9 = 0;
     long bp = millis();
     long mstart = micros();
 
     fb = esp_camera_fb_get();
-    if (!fb) {
+    if (!fb)
+    {
       Serial.println("Camera Capture Failed");
       failures++;
-    } else {
+    }
+    else
+    {
       long mdelay = micros() - mstart;
 
       int get_fail = 0;
@@ -551,19 +543,29 @@ camera_fb_t *get_good_jpeg() {
 
       fblen = fb->len;
 
-      for (int j = 1; j <= 1025; j++) {
-        if (fb->buf[fblen - j] != 0xD9) {
+      for (int j = 1; j <= 1025; j++)
+      {
+        if (fb->buf[fblen - j] != 0xD9)
+        {
           // no d9, try next for
-        } else {                                 //Serial.println("Found a D9");
-          if (fb->buf[fblen - j - 1] == 0xFF) {  //Serial.print("Found the FFD9, junk is "); Serial.println(j);
-            if (j == 1) {
+        }
+        else
+        { // Serial.println("Found a D9");
+          if (fb->buf[fblen - j - 1] == 0xFF)
+          { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
+            if (j == 1)
+            {
               normal_jpg++;
-            } else {
+            }
+            else
+            {
               extend_jpg++;
             }
             foundffd9 = 1;
-            if (Lots_of_Stats) {
-              if (j > 900) {  //  rarely happens - sometimes on 2640
+            if (Lots_of_Stats)
+            {
+              if (j > 900)
+              { //  rarely happens - sometimes on 2640
                 Serial.print("Frame ");
                 Serial.print(frame_cnt);
                 logfile.print("Frame ");
@@ -572,7 +574,7 @@ camera_fb_t *get_good_jpeg() {
                 Serial.print(fblen);
                 logfile.print(", Len = ");
                 logfile.print(fblen);
-                //Serial.print(", Correct Len = "); Serial.print(fblen - j + 1);
+                // Serial.print(", Correct Len = "); Serial.print(fblen - j + 1);
                 Serial.print(", Extra Bytes = ");
                 Serial.println(j - 1);
                 logfile.print(", Extra Bytes = ");
@@ -580,13 +582,14 @@ camera_fb_t *get_good_jpeg() {
                 logfile.flush();
               }
 
-              if (frame_cnt % 100 == 50) {
+              if (frame_cnt % 100 == 50)
+              {
                 gframe_cnt = frame_cnt;
                 gfblen = fblen;
                 gj = j;
                 gmdelay = mdelay;
-                //Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
-                //logfile.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                // Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                // logfile.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
                 do_it_now = 1;
               }
             }
@@ -595,24 +598,27 @@ camera_fb_t *get_good_jpeg() {
         }
       }
 
-      if (!foundffd9) {
+      if (!foundffd9)
+      {
         bad_jpg++;
         Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_cnt, fblen);
         logfile.printf("Bad jpeg, Frame %d, Len = %d\n", frame_cnt, fblen);
 
         esp_camera_fb_return(fb);
         failures++;
-
-      } else {
+      }
+      else
+      {
         break;
         // count up the useless bytes
       }
     }
 
-  } while (failures < 10);  // normally leave the loop with a break()
+  } while (failures < 10); // normally leave the loop with a break()
 
   // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
-  if (failures == 10) {
+  if (failures == 10)
+  {
     Serial.printf("10 failures");
     logfile.printf("10 failures");
     logfile.flush();
@@ -626,7 +632,7 @@ camera_fb_t *get_good_jpeg() {
     delay(1000);
 
     avi_frm.start_record = 0;
-    //reboot_now = true;
+    // reboot_now = true;
   }
   return fb;
 }
@@ -636,24 +642,24 @@ camera_fb_t *get_good_jpeg() {
 //  eprom functions  - increment the file_group, so files are always unique
 //
 
-
-
-
-
-void do_eprom_read() {
+void do_eprom_read()
+{
 
   eprom_data ed;
 
   EEPROM.begin(200);
   EEPROM.get(0, ed);
 
-  if (ed.eprom_good == MagicNumber) {
+  if (ed.eprom_good == MagicNumber)
+  {
     Serial.println("Good settings in the EPROM ");
     file_group = ed.file_group;
     file_group++;
     Serial.print("New File Group ");
     Serial.println(file_group);
-  } else {
+  }
+  else
+  {
     Serial.println("No settings in EPROM - Starting with File Group 1 ");
     file_group = 1;
   }
@@ -669,13 +675,13 @@ void do_eprom_read() {
 //   another_pic_avi() - write one more frame of movie
 //   end_avi() - write the final parameters and close the file
 
-
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 // start_avi - open the files and write in headers
 //
 
-static void start_avi() {
+static void start_avi()
+{
 
   long start = millis();
 
@@ -688,22 +694,29 @@ static void start_avi() {
   avifile = SD_MMC.open(avi_file_name, "w");
   idxfile = SD_MMC.open("/idx.tmp", "w");
 
-  if (avifile) {
+  if (avifile)
+  {
     Serial.printf("File open: %s\n", avi_file_name);
     logfile.printf("File open: %s\n", avi_file_name);
-  } else {
+  }
+  else
+  {
     Serial.println("Could not open file");
     // major_fail();
   }
 
-  if (idxfile) {
-    //Serial.printf("File open: %s\n", "//idx.tmp");
-  } else {
+  if (idxfile)
+  {
+    // Serial.printf("File open: %s\n", "//idx.tmp");
+  }
+  else
+  {
     Serial.println("Could not open file /idx.tmp");
     // major_fail();
   }
 
-  for (i = 0; i < AVIOFFSET; i++) {
+  for (i = 0; i < AVIOFFSET; i++)
+  {
     char ch = pgm_read_byte(&avi_header[i]);
     buf[i] = ch;
   }
@@ -716,15 +729,21 @@ static void start_avi() {
   size_t err = avifile.write(buf, AVIOFFSET);
 
   uint8_t ex_fps = 1;
-  if (frame_interval == 0) {
-    if (camera_framesize >= 11) {
-      ex_fps = 12.5 * speed_up_factor;
+  if (cam_frm.frame_interval == 0)
+  {
+    if (camera_framesize >= 11)
+    {
+      ex_fps = 12.5 * avi_frm.speed_up_factor;
       ;
-    } else {
-      ex_fps = 25.0 * speed_up_factor;
     }
-  } else {
-    ex_fps = round(1000.0 / frame_interval * speed_up_factor);
+    else
+    {
+      ex_fps = 25.0 * avi_frm.speed_up_factor;
+    }
+  }
+  else
+  {
+    ex_fps = round(1000.0 / cam_frm.frame_interval * avi_frm.speed_up_factor);
   }
 
   avifile.seek(0x84, SeekSet);
@@ -765,7 +784,7 @@ static void start_avi() {
   logfile.flush();
   avifile.flush();
 
-}  // end of start avi
+} // end of start avi
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
@@ -773,7 +792,8 @@ static void start_avi() {
 //           -- pass in a fb pointer to the frame to add
 //
 
-static void another_save_avi(camera_fb_t *fb) {
+static void another_save_avi(camera_fb_t *fb)
+{
 
   long start = millis();
 
@@ -790,7 +810,7 @@ static void another_save_avi(camera_fb_t *fb) {
   long bw = millis();
   long frame_write_start = millis();
 
-  framebuffer_static[0] = 0x30;  // "00dc"
+  framebuffer_static[0] = 0x30; // "00dc"
   framebuffer_static[1] = 0x30;
   framebuffer_static[2] = 0x64;
   framebuffer_static[3] = 0x63;
@@ -804,13 +824,15 @@ static void another_save_avi(camera_fb_t *fb) {
 
   fb_block_start = fb->buf;
 
-  if (fblen > fbs * 1024 - 8) {  // fbs is the size of frame buffer static
+  if (fblen > fbs * 1024 - 8)
+  { // fbs is the size of frame buffer static
     fb_block_length = fbs * 1024;
     fblen = fblen - (fbs * 1024 - 8);
     memcpy(framebuffer_static + 8, fb_block_start, fb_block_length - 8);
     fb_block_start = fb_block_start + fb_block_length - 8;
-
-  } else {
+  }
+  else
+  {
     fb_block_length = fblen + 8 + remnant;
     memcpy(framebuffer_static + 8, fb_block_start, fblen);
     fblen = 0;
@@ -818,7 +840,8 @@ static void another_save_avi(camera_fb_t *fb) {
 
   size_t err = avifile.write(framebuffer_static, fb_block_length);
 
-  if (err != fb_block_length) {
+  if (err != fb_block_length)
+  {
     Serial.print("Error on avi write: err = ");
     Serial.print(err);
     Serial.print(" len = ");
@@ -829,12 +852,16 @@ static void another_save_avi(camera_fb_t *fb) {
     logfile.println(fb_block_length);
   }
 
-  while (fblen > 0) {
+  while (fblen > 0)
+  {
 
-    if (fblen > fbs * 1024) {
+    if (fblen > fbs * 1024)
+    {
       fb_block_length = fbs * 1024;
       fblen = fblen - fb_block_length;
-    } else {
+    }
+    else
+    {
       fb_block_length = fblen + remnant;
       fblen = 0;
     }
@@ -843,7 +870,8 @@ static void another_save_avi(camera_fb_t *fb) {
 
     size_t err = avifile.write(framebuffer_static, fb_block_length);
 
-    if (err != fb_block_length) {
+    if (err != fb_block_length)
+    {
       Serial.print("Error on avi write: err = ");
       Serial.print(err);
       Serial.print(" len = ");
@@ -853,7 +881,6 @@ static void another_save_avi(camera_fb_t *fb) {
     fb_block_start = fb_block_start + fb_block_length;
     delay(0);
   }
-
 
   movi_size += jpeg_size;
   uVideoLen += jpeg_size;
@@ -865,12 +892,13 @@ static void another_save_avi(camera_fb_t *fb) {
 
   movi_size = movi_size + remnant;
 
-  if (do_it_now == 1 && frame_cnt < 1011) {
+  if (do_it_now == 1 && frame_cnt < 1011)
+  {
     do_it_now = 0;
     Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d,  sd time %4d -- \n", gframe_cnt, gfblen, gj - 1, gmdelay / 1000, millis() - bw);
     logfile.printf("Frame % 6d, len % 6d, extra  % 4d, cam time % 7d,  sd time % 4d -- \n", gframe_cnt, gfblen, gj - 1, gmdelay / 1000, millis() - bw);
-    //Serial.printf(" sd time %4d -- \n",  millis() - bw);
-    //logfile.printf(" sd time %4d -- \n",  millis() - bw);
+    // Serial.printf(" sd time %4d -- \n",  millis() - bw);
+    // logfile.printf(" sd time %4d -- \n",  millis() - bw);
     logfile.flush();
   }
 
@@ -879,15 +907,15 @@ static void another_save_avi(camera_fb_t *fb) {
 
   avifile.flush();
 
-
-}  // end of another_pic_avi
+} // end of another_pic_avi
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 //  end_avi writes the index, and closes the files
 //
 
-static void end_avi() {
+static void end_avi()
+{
 
   long start = millis();
 
@@ -896,24 +924,26 @@ static void end_avi() {
   Serial.println("End of avi - closing the files");
   logfile.println("End of avi - closing the files");
 
-  if (frame_cnt < 5) {
+  if (frame_cnt < 5)
+  {
     Serial.println("Recording screwed up, less than 5 frames, forget index\n");
     idxfile.close();
     avifile.close();
     int xx = remove("/idx.tmp");
     int yy = remove(avi_file_name);
-
-  } else {
+  }
+  else
+  {
 
     elapsedms = millis() - startms;
 
-    float fRealFPS = (1000.0f * (float)frame_cnt) / ((float)elapsedms) * speed_up_factor;
+    float fRealFPS = (1000.0f * (float)frame_cnt) / ((float)elapsedms) * avi_frm.speed_up_factor;
 
     float fmicroseconds_per_frame = 1000000.0f / fRealFPS;
     uint8_t iAttainedFPS = round(fRealFPS);
     uint32_t us_per_frame = round(fmicroseconds_per_frame);
 
-    //Modify the MJPEG header from the beginning of the file, overwriting various placeholders
+    // Modify the MJPEG header from the beginning of the file, overwriting various placeholders
 
     avifile.seek(4, SeekSet);
     print_quartet(movi_size + 240 + 16 * frame_cnt + 8 * frame_cnt, avifile);
@@ -988,10 +1018,13 @@ static void end_avi() {
 
     idxfile = SD_MMC.open("/idx.tmp", "r");
 
-    if (idxfile) {
-      //Serial.printf("File open: %s\n", "//idx.tmp");
-      //logfile.printf("File open: %s\n", "/idx.tmp");
-    } else {
+    if (idxfile)
+    {
+      // Serial.printf("File open: %s\n", "//idx.tmp");
+      // logfile.printf("File open: %s\n", "/idx.tmp");
+    }
+    else
+    {
       Serial.println("Could not open index file");
       logfile.println("Could not open index file");
       // major_fail();
@@ -1000,7 +1033,8 @@ static void end_avi() {
     char *AteBytes;
     AteBytes = (char *)malloc(8);
 
-    for (int i = 0; i < frame_cnt; i++) {
+    for (int i = 0; i < frame_cnt; i++)
+    {
       size_t res = idxfile.readBytes(AteBytes, 8);
       size_t i1_err = avifile.write(dc_buf, 4);
       size_t i2_err = avifile.write(zero_buf, 4);
@@ -1041,34 +1075,35 @@ static void end_avi() {
   logfile.flush();
 }
 
-
 void the_camera_loop(void *pvParameter);
 void the_sd_loop(void *pvParameter);
 void delete_old_stuff();
 
-
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-void setup() {
+void setup()
+{
 
   Serial.begin(115200);
   Serial.setDebugOutput(true);
 
-  pinMode(4, OUTPUT);    // Blinding Disk-Avtive Light
-  digitalWrite(4, LOW);  // turn off
-
+  pinMode(4, OUTPUT);   // Blinding Disk-Avtive Light
+  digitalWrite(4, LOW); // turn off
 
   cam_frm.framebuffer_time = 0;
   cam_frm.current_frame_time = 0;
   cam_frm.last_frame_time = 0;
+  cam_frm.frame_interval = 0;
+  cam_frm.most_recent_fps = 0.0;
+  cam_frm.most_recent_avg_framesize = 0;
 
-  avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC; 
-  
+  avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC;
+  avi_frm.speed_up_factor = 1;
+
   avi_frm.avi_start_time = 0;
   avi_frm.avi_end_time = 0;
   avi_frm.start_record = false;
-
 
   Serial.println("                                    ");
   Serial.println("-------------------------------------");
@@ -1080,7 +1115,8 @@ void setup() {
   // SD camera init
   Serial.println("Mounting the SD card ...");
   esp_err_t card_err = init_sdcard();
-  if (card_err != ESP_OK) {
+  if (card_err != ESP_OK)
+  {
     Serial.printf("SD Card init failed with error 0x%x", card_err);
     // major_fail();
     return;
@@ -1088,33 +1124,30 @@ void setup() {
 
   Serial.println("Try to get parameters from config.txt ...");
 
-
   Serial.println("Setting up the camera ...");
   config_camera();
 
   Serial.println("Checking SD for available space ...");
   delete_old_stuff();
 
-  cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024);   // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024); // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
   // avi_frm.framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
   // framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
 
   Serial.println("Creating the_camera_loop_task");
 
-  wait_for_sd = xSemaphoreCreateBinary();  //xSemaphoreCreateMutex();
-  sd_go = xSemaphoreCreateBinary();        //xSemaphoreCreateMutex();
+  wait_for_sd = xSemaphoreCreateBinary(); // xSemaphoreCreateMutex();
+  sd_go = xSemaphoreCreateBinary();       // xSemaphoreCreateMutex();
   baton = xSemaphoreCreateMutex();
 
   // prio 6 - higher than the camera loop(), and the streaming
-  xTaskCreatePinnedToCore(the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0);  // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
+  xTaskCreatePinnedToCore(the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0); // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
   delay(100);
   // prio 4 - higher than the cam_loop(), and the streaming
-  xTaskCreatePinnedToCore(the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1);  // prio 4, core 1
+  xTaskCreatePinnedToCore(the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1); // prio 4, core 1
   delay(200);
 
-
   // boot_time = millis();
-
 
   Serial.println("  End of setup()\n\n");
 }
@@ -1124,26 +1157,28 @@ void setup() {
 // the_sd_loop()
 //
 
-void the_sd_loop(void *pvParameter) {
+void the_sd_loop(void *pvParameter)
+{
 
   Serial.print("the_sd_loop, core ");
   Serial.print(xPortGetCoreID());
   Serial.print(", priority = ");
   Serial.println(uxTaskPriorityGet(NULL));
 
-  while (1) {
-    xSemaphoreTake(sd_go, portMAX_DELAY);  // we wait for camera loop to tell us to go
-    another_save_avi(fb_curr);             // do the actual sd wrte
-    xSemaphoreGive(wait_for_sd);           // tell camera loop we are done
+  while (1)
+  {
+    xSemaphoreTake(sd_go, portMAX_DELAY); // we wait for camera loop to tell us to go
+    another_save_avi(fb_curr);            // do the actual sd wrte
+    xSemaphoreGive(wait_for_sd);          // tell camera loop we are done
   }
 }
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// the_camera_loop()
-int delete_old_stuff_flag = 0;
 
-void the_camera_loop(void *pvParameter) {
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void the_camera_loop(void *pvParameter)
+{
 
   Serial.print("the camera loop, core ");
   Serial.print(xPortGetCoreID());
@@ -1157,7 +1192,8 @@ void the_camera_loop(void *pvParameter) {
 
   delay(1000);
 
-  while (1) {
+  while (1)
+  {
 
     // if (frame_cnt == 0 && avi_frm.start_record == 0)  // do nothing
     // if (frame_cnt == 0 && avi_frm.start_record == 1)  // start a movie
@@ -1174,13 +1210,14 @@ void the_camera_loop(void *pvParameter) {
 
     //   ///////////////////  START A MOVIE  //////////////////
     // } else
-    if (frame_cnt == 0 && avi_frm.start_record == 1) {
+    if (frame_cnt == 0 && avi_frm.start_record == 1)
+    {
 
-      //Serial.println("Ready to start");
+      // Serial.println("Ready to start");
 
       // we_are_already_stopped = 0;
 
-      //delete_old_stuff(); // move to loop
+      // delete_old_stuff(); // move to loop
 
       avi_frm.avi_start_time = millis();
       Serial.printf("\nStart the avi ... at %d\n", avi_frm.avi_start_time);
@@ -1192,26 +1229,27 @@ void the_camera_loop(void *pvParameter) {
       frame_cnt++;
 
       long wait_for_cam_start = millis();
-      fb_curr = get_good_jpeg();  // should take zero time
+      fb_curr = get_good_jpeg(); // should take zero time
       wait_for_cam += millis() - wait_for_cam_start;
 
       start_avi();
 
       wait_for_cam_start = millis();
-      fb_next = get_good_jpeg();  // should take nearly zero time due to time spent writing header
-      //if (cam_frm.framebuffer_time < (millis() - 10)){
+      fb_next = get_good_jpeg(); // should take nearly zero time due to time spent writing header
+      // if (cam_frm.framebuffer_time < (millis() - 10)){
       xSemaphoreTake(baton, portMAX_DELAY);
-      cam_frm.framebuffer_len = fb_next->len;                   // v59.5
-      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len);  // v59.5
-      cam_frm.framebuffer_time = millis();                      // v59.5
+      cam_frm.framebuffer_len = fb_next->len;                  // v59.5
+      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len); // v59.5
+      cam_frm.framebuffer_time = millis();                     // v59.5
       xSemaphoreGive(baton);
       //}
       wait_for_cam += millis() - wait_for_cam_start;
-      xSemaphoreGive(sd_go);  // trigger sd write to write first frame
-
+      xSemaphoreGive(sd_go); // trigger sd write to write first frame
 
       ///////////////////  END THE MOVIE //////////////////
-    } else if (restart_now || reboot_now || (frame_cnt > 0 && avi_frm.start_record == 0) || millis() > (avi_frm.avi_start_time + avi_frm.avi_length * 1000)) {  // end the avi
+    }
+    else if (restart_now || reboot_now || (frame_cnt > 0 && avi_frm.start_record == 0) || millis() > (avi_frm.avi_start_time + avi_frm.avi_length * 1000))
+    { // end the avi
 
       Serial.println("End the Avi");
       restart_now = false;
@@ -1223,18 +1261,15 @@ void the_camera_loop(void *pvParameter) {
       fb_curr = fb_next;
       fb_next = NULL;
 
-      xSemaphoreGive(sd_go);  // save final frame of movie
+      xSemaphoreGive(sd_go); // save final frame of movie
 
-
-      xSemaphoreTake(wait_for_sd, portMAX_DELAY);  // wait for final frame of movie to be written
+      xSemaphoreTake(wait_for_sd, portMAX_DELAY); // wait for final frame of movie to be written
 
       esp_camera_fb_return(fb_curr);
       fb_curr = NULL;
 
-      end_avi();  // end the movie
+      end_avi(); // end the movie
 
-
-      delete_old_stuff_flag = 1;
       delay(50);
 
       avi_frm.avi_end_time = millis();
@@ -1244,57 +1279,65 @@ void the_camera_loop(void *pvParameter) {
       Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_frm.avi_end_time, avi_frm.avi_end_time - avi_frm.avi_start_time, fps);
       logfile.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_frm.avi_end_time, avi_frm.avi_end_time - avi_frm.avi_start_time, fps);
 
-      if (!reboot_now) frame_cnt = 0;  // start recording again on the next loop
+      if (!reboot_now)
+        frame_cnt = 0; // start recording again on the next loop
 
       ///////////////////  ANOTHER FRAME  //////////////////
-    } else if (frame_cnt > 0 && avi_frm.start_record != 0) {  // another frame of the avi
+    }
+    else if (frame_cnt > 0 && avi_frm.start_record != 0)
+    { // another frame of the avi
 
-      //Serial.println("Another frame");
+      // Serial.println("Another frame");
 
       cam_frm.current_frame_time = millis();
-      if (cam_frm.current_frame_time - cam_frm.last_frame_time < frame_interval) {
-        delay(frame_interval - (cam_frm.current_frame_time - cam_frm.last_frame_time));  // delay for timelapse
+      if (cam_frm.current_frame_time - cam_frm.last_frame_time < cam_frm.frame_interval)
+      {
+        delay(cam_frm.frame_interval - (cam_frm.current_frame_time - cam_frm.last_frame_time)); // delay for timelapse
       }
       cam_frm.last_frame_time = millis();
 
       frame_cnt++;
 
       long delay_wait_for_sd_start = millis();
-      xSemaphoreTake(wait_for_sd, portMAX_DELAY);  // make sure sd writer is done
+      xSemaphoreTake(wait_for_sd, portMAX_DELAY); // make sure sd writer is done
       delay_wait_for_sd += millis() - delay_wait_for_sd_start;
 
       esp_camera_fb_return(fb_curr);
 
-      fb_curr = fb_next;  // we will write a frame, and get the camera preparing a new one
+      fb_curr = fb_next; // we will write a frame, and get the camera preparing a new one
 
-      xSemaphoreGive(sd_go);  // write the frame in fb_curr
+      xSemaphoreGive(sd_go); // write the frame in fb_curr
 
       long wait_for_cam_start = millis();
-      fb_next = get_good_jpeg();  // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
-      //if (cam_frm.framebuffer_time < (millis() - 10)){
+      fb_next = get_good_jpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
+      // if (cam_frm.framebuffer_time < (millis() - 10)){
       xSemaphoreTake(baton, portMAX_DELAY);
-      cam_frm.framebuffer_len = fb_next->len;                   // v59.5
-      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len);  // v59.5
-      cam_frm.framebuffer_time = millis();                      // v59.5
+      cam_frm.framebuffer_len = fb_next->len;                  // v59.5
+      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len); // v59.5
+      cam_frm.framebuffer_time = millis();                     // v59.5
       xSemaphoreGive(baton);
       //}
       wait_for_cam += millis() - wait_for_cam_start;
 
-      
-      if (frame_cnt % 100 == 10) {  // print some status every 100 frames
-        if (frame_cnt == 10) {
+      if (frame_cnt % 100 == 10)
+      { // print some status every 100 frames
+        if (frame_cnt == 10)
+        {
           bytes_before_last_100_frames = movi_size;
           time_before_last_100_frames = millis();
-          most_recent_fps = 0;
-          most_recent_avg_framesize = 0;
-        } else {
+          cam_frm.most_recent_fps = 0;
+          cam_frm.most_recent_avg_framesize = 0;
+        }
+        else
+        {
 
-          most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0);
-          most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
+          cam_frm.most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0);
+          cam_frm.most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
 
-          if (Lots_of_Stats && frame_cnt < 1011) {
-            Serial.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
-            logfile.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * most_recent_avg_framesize, most_recent_fps);
+          if (Lots_of_Stats && frame_cnt < 1011)
+          {
+            Serial.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * cam_frm.most_recent_avg_framesize, cam_frm.most_recent_fps);
+            logfile.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_frm.avi_start_time), 1.0 / 1024 * cam_frm.most_recent_avg_framesize, cam_frm.most_recent_fps);
           }
 
           // total_delay = 0;
@@ -1307,12 +1350,7 @@ void the_camera_loop(void *pvParameter) {
   }
 }
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// loop() - loop runs at low prio, so I had to move it to the task the_camera_loop at higher priority
 
-long wakeup;
-long last_wakeup = 0;
-
-void loop() {
+void loop()
+{
 }
