@@ -16,6 +16,22 @@
 
 #include <EEPROM.h>
 
+// MicroSD
+#include "driver/sdmmc_host.h"
+#include "driver/sdmmc_defs.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+#include "FS.h"
+#include <SD_MMC.h>
+
+TaskHandle_t the_camera_loop_task;
+TaskHandle_t the_sd_loop_task;
+
+static SemaphoreHandle_t take_new_frame;
+static SemaphoreHandle_t save_current_frame;
+
+SemaphoreHandle_t baton; // need edit
+
 static const char vernum[] = "v60.4.7";
 char devname[30];
 String devstr = "desklens";
@@ -24,13 +40,6 @@ String devstr = "desklens";
 
 bool reboot_now = false;  // need modification then can delete
 bool restart_now = false; // need modification then can delete
-
-TaskHandle_t the_camera_loop_task;
-TaskHandle_t the_sd_loop_task;
-
-static SemaphoreHandle_t wait_for_sd;
-static SemaphoreHandle_t sd_go;
-SemaphoreHandle_t baton; // need edit
 
 // https://github.com/espressif/esp32-camera/issues/182
 #define fbs 8 // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
@@ -92,14 +101,6 @@ int gmdelay;
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //  Avi Writer Stuff here
 
-// MicroSD
-#include "driver/sdmmc_host.h"
-#include "driver/sdmmc_defs.h"
-#include "sdmmc_cmd.h"
-#include "esp_vfs_fat.h"
-#include "FS.h"
-#include <SD_MMC.h>
-
 File logfile;
 File avifile;
 File idxfile;
@@ -139,6 +140,102 @@ uint8_t dc_buf[4] = {0x30, 0x30, 0x64, 0x63}; // "00dc"
 // uint8_t avi1_buf[4] = { 0x41, 0x56, 0x49, 0x31 };  // "AVI1"
 uint8_t idx1_buf[4] = {0x69, 0x64, 0x78, 0x31}; // "idx1"
 
+void do_eprom_read();
+void do_eprom_write();
+
+void the_sd_loop(void *pvParameter);
+static esp_err_t init_sdcard();
+void listDir(const char *dirname, uint8_t levels);
+void deleteFolderOrFile(const char *val);
+void delete_old_stuff();
+
+static void start_avi();
+static void another_save_avi(camera_fb_t *fb);
+static void end_avi();
+static void inline print_quartet(unsigned long i, File fd);
+static void inline print_2quartet(unsigned long i, unsigned long j, File fd);
+
+void the_camera_loop(void *pvParameter);
+camera_fb_t *get_good_jpeg();
+
+void setup()
+{
+
+  Serial.begin(115200);
+  Serial.setDebugOutput(true);
+
+  pinMode(4, OUTPUT);   // Blinding Disk-Avtive Light
+  digitalWrite(4, LOW); // turn off
+
+  cam_frm.framebuffer_time = 0;
+  cam_frm.current_frame_time = 0;
+  cam_frm.last_frame_time = 0;
+  cam_frm.frame_interval = 0;
+  cam_frm.most_recent_fps = 0.0;
+  cam_frm.most_recent_avg_framesize = 0;
+
+  avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC;
+  avi_frm.speed_up_factor = 1;
+
+  avi_frm.avi_start_time = 0;
+  avi_frm.avi_end_time = 0;
+  avi_frm.start_record = false;
+
+  Serial.println("                                    ");
+  Serial.println("-------------------------------------");
+  Serial.printf("ESP32-CAM-Video-Recorder-junior %s\n", vernum);
+  Serial.println("-------------------------------------");
+
+  do_eprom_read();
+
+  // SD camera init
+  Serial.println("Mounting the SD card ...");
+  esp_err_t card_err = init_sdcard();
+  if (card_err != ESP_OK)
+  {
+    Serial.printf("SD Card init failed with error 0x%x", card_err);
+    // major_fail();
+    return;
+  }
+
+  Serial.println("Try to get parameters from config.txt ...");
+
+  Serial.println("Setting up the camera ...");
+  config_camera();
+
+  Serial.println("Checking SD for available space ...");
+  delete_old_stuff();
+
+  cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024); // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  // avi_frm.framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  // framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+
+  Serial.println("Creating the_camera_loop_task");
+
+  take_new_frame = xSemaphoreCreateBinary(); // xSemaphoreCreateMutex();
+  save_current_frame = xSemaphoreCreateBinary();       // xSemaphoreCreateMutex();
+  baton = xSemaphoreCreateMutex();
+
+  // prio 6 - higher than the camera loop(), and the streaming
+  xTaskCreatePinnedToCore(the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0); // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
+  delay(100);
+  // prio 4 - higher than the cam_loop(), and the streaming
+  xTaskCreatePinnedToCore(the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1); // prio 4, core 1
+  delay(200);
+
+  // boot_time = millis();
+
+  Serial.println("  End of setup()\n\n");
+}
+
+void loop()
+{
+}
+
+/*********************************************************************************/
+/************************    EEPROM    *******************************************/
+/*********************************************************************************/
+
 struct eprom_data
 {
   int eprom_good;
@@ -160,101 +257,50 @@ void do_eprom_write()
   EEPROM.end();
 }
 
-void deleteFolderOrFile(const char *val)
+//  eprom functions  - increment the file_group, so files are always unique
+void do_eprom_read()
 {
-  // Function provided by user @gemi254
-  Serial.printf("Deleting : %s\n", val);
-  File f = SD_MMC.open("/" + String(val));
-  if (!f)
-  {
-    Serial.printf("Failed to open %s\n", val);
-    return;
-  }
 
-  if (f.isDirectory())
+  eprom_data ed;
+
+  EEPROM.begin(200);
+  EEPROM.get(0, ed);
+
+  if (ed.eprom_good == MagicNumber)
   {
-    File file = f.openNextFile();
-    while (file)
-    {
-      if (file.isDirectory())
-      {
-        Serial.print("  DIR : ");
-        Serial.println(file.name());
-      }
-      else
-      {
-        Serial.print("  FILE: ");
-        Serial.print(file.name());
-        Serial.print("  SIZE: ");
-        Serial.print(file.size());
-        if (SD_MMC.remove(file.name()))
-        {
-          Serial.println(" deleted.");
-        }
-        else
-        {
-          Serial.println(" FAILED.");
-        }
-      }
-      file = f.openNextFile();
-    }
-    f.close();
-    // Remove the dir
-    if (SD_MMC.rmdir("/" + String(val)))
-    {
-      Serial.printf("Dir %s removed\n", val);
-    }
-    else
-    {
-      Serial.println("Remove dir failed");
-    }
+    Serial.println("Good settings in the EPROM ");
+    file_group = ed.file_group;
+    file_group++;
+    Serial.print("New File Group ");
+    Serial.println(file_group);
   }
   else
   {
-    // Remove the file
-    if (SD_MMC.remove("/" + String(val)))
-    {
-      Serial.printf("File %s deleted\n", val);
-    }
-    else
-    {
-      Serial.println("Delete failed");
-    }
+    Serial.println("No settings in EPROM - Starting with File Group 1 ");
+    file_group = 1;
   }
+  do_eprom_write();
+  file_number = 1;
 }
 
-//  data structure from here https://github.com/s60sc/ESP32-CAM_MJPEG2SD/blob/master/avi.cpp, extended for ov5640
+/*********************************************************************************/
+/************************    SD Card    *******************************************/
+/*********************************************************************************/
 
-//
-// Writes an uint32_t in Big Endian at current file position
-//
-static void inline print_quartet(unsigned long i, File fd)
+void the_sd_loop(void *pvParameter)
 {
 
-  uint8_t y[4];
-  y[0] = i % 0x100;
-  y[1] = (i >> 8) % 0x100;
-  y[2] = (i >> 16) % 0x100;
-  y[3] = (i >> 24) % 0x100;
-  size_t i1_err = fd.write(y, 4);
-}
+  Serial.print("the_sd_loop, core ");
+  Serial.print(xPortGetCoreID());
+  Serial.print(", priority = ");
+  Serial.println(uxTaskPriorityGet(NULL));
 
-//
-// Writes 2 uint32_t in Big Endian at current file position
-//
-static void inline print_2quartet(unsigned long i, unsigned long j, File fd)
-{
-
-  uint8_t y[8];
-  y[0] = i % 0x100;
-  y[1] = (i >> 8) % 0x100;
-  y[2] = (i >> 16) % 0x100;
-  y[3] = (i >> 24) % 0x100;
-  y[4] = j % 0x100;
-  y[5] = (j >> 8) % 0x100;
-  y[6] = (j >> 16) % 0x100;
-  y[7] = (j >> 24) % 0x100;
-  size_t i1_err = fd.write(y, 8);
+  while (1)
+  {
+    xSemaphoreTake(save_current_frame, portMAX_DELAY); // we wait for camera loop to tell us to go
+    another_save_avi(fb_curr);            // do the actual sd wrte
+    xSemaphoreGive(take_new_frame);          // tell camera loop we are done
+  }
 }
 
 static esp_err_t init_sdcard()
@@ -296,107 +342,6 @@ static esp_err_t init_sdcard()
 
   return ESP_OK;
 }
-
-// #include "config.h"
-
-// void read_config_file() {
-
-//   // if there is a config.txt, use it plus defaults
-//   // else use defaults, and create a config.txt
-
-//   // put a file "config.txt" onto SD card, to set parameters different from your hardcoded parameters
-//   // it should look like this - one paramter per line, in the correct order, followed by 2 spaces, and any comments you choose
-//   /*
-//     ~~~ old config.txt file ~~~
-//     desklens  // camera name for files, mdns, etc
-//     11  // camera_framesize 9=svga, 10=xga, 11=hd, 12=sxga, 13=uxga, 14=fhd, 17=qxga, 18=qhd, 21=qsxga
-//     8  // quality 0-63, lower the better, 10 good start, must be higher than "quality config"
-//     11  // camera_framesize config - must be equal or higher than camera_framesize
-//     5  / quality config - high q 0..5, med q 6..10, low q 11+
-//     3  // buffers - 1 is half speed of 3, but you might run out od memory with 3 and camera_framesize > uxga
-//     900  // length of video in seconds
-//     0  // interval - ms between frames - 0 for fastest, or 500 for 2fps, 10000 for 10 sec/frame
-//     1  // speedup - multiply framerate - 1 for realtime, 24 for record at 1fps, play at 24fps or24x
-//     0  // streamdelay - ms between streaming frames - 0 for fast as possible, 500 for 2fps
-//     4  // 0 no internet, 1 get time then shutoff, 2 streaming using wifiman, 3 for use ssid names below default off, 4 names below default on
-//     MST7MDT,M3.2.0/2:00:00,M11.1.0/2:00:00  // timezone - this is mountain time, find timezone here https://sites.google.com/a/usapiens.com/opnode/time-zones
-//     ssid1234  // ssid
-//     mrpeanut  // ssid password
-
-//     ~~~ new config.txt file ~~~
-//     desklens  // camera name
-//     11  // camera_framesize  11=hd
-//     1800  // length of video in seconds
-//     0  // interval - ms between recording frames
-//     1  // speedup - multiply framerate
-//     0  // streamdelay - ms between streaming frames
-//     GMT // timezone
-//     ssid1234  // ssid wifi name
-//     mrpeanut  // ssid password
-//     ~~~
-
-//     Lines above are rigid - do not delete lines, must have 2 spaces after the number or string
-//   */
-
-//   String junk;
-
-//   String cname = "desklens";
-//   int cframesize = 11;
-//   int cquality = 12;
-//   int cframesizeconfig = 13;
-//   int cqualityconfig = 5;
-//   int cbuffersconfig = 4;  //58.9
-//   int clength = 1800;
-//   int cinterval = 0;
-//   int cspeedup = 1;
-//   int cstreamdelay = 0;
-//   int cinternet = 0;
-//   String czone = "GMT";
-
-//   Serial.printf("=========   Data fram config.txt and defaults  =========\n");
-//   Serial.printf("Name %s\n", cname);
-//   logfile.printf("Name %s\n", cname);
-//   Serial.printf("Framesize %d\n", cframesize);
-//   logfile.printf("Framesize %d\n", cframesize);
-//   Serial.printf("Quality %d\n", cquality);
-//   logfile.printf("Quality %d\n", cquality);
-//   Serial.printf("Framesize config %d\n", cframesizeconfig);
-//   logfile.printf("Framesize config%d\n", cframesizeconfig);
-//   Serial.printf("Quality config %d\n", cqualityconfig);
-//   logfile.printf("Quality config%d\n", cqualityconfig);
-//   Serial.printf("Buffers config %d\n", cbuffersconfig);
-//   logfile.printf("Buffers config %d\n", cbuffersconfig);
-//   Serial.printf("Length %d\n", clength);
-//   logfile.printf("Length %d\n", clength);
-//   Serial.printf("Interval %d\n", cinterval);
-//   logfile.printf("Interval %d\n", cinterval);
-//   Serial.printf("Speedup %d\n", cspeedup);
-//   logfile.printf("Speedup %d\n", cspeedup);
-//   Serial.printf("Streamdelay %d\n", cstreamdelay);
-//   logfile.printf("Streamdelay %d\n", cstreamdelay);
-//   Serial.printf("Internet %d\n", cinternet);
-//   logfile.printf("Internet %d\n", cinternet);
-//   Serial.printf("Zone len %d, %s\n", czone.length(), czone.c_str());  //logfile.printf("Zone len %d, %s\n", czone.length(), czone);
-
-//   framesize = cframesize;
-//   quality = cquality;
-//   framesizeconfig = cframesizeconfig;
-//   camera_jpeg_quality = cqualityconfig;
-//   buffersconfig = cbuffersconfig;
-//   avi_frm.avi_length = clength;
-//   cam_frm.frame_interval = cinterval;
-//   avi_frm.speed_up_factor = cspeedup;
-//   stream_delay = cstreamdelay;
-//   configfile = true;
-//   TIMEZONE = czone;
-
-//   cname.toCharArray(devname, cname.length() + 1);
-// }
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//  delete_old_stuff() - delete oldest files to free diskspace
-//
 
 void listDir(const char *dirname, uint8_t levels)
 {
@@ -507,179 +452,78 @@ void delete_old_stuff()
   }
 }
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//  get_good_jpeg()  - take a picture and make sure it has a good jpeg
-//
-camera_fb_t *get_good_jpeg()
+void deleteFolderOrFile(const char *val)
 {
-
-  camera_fb_t *fb;
-
-  long start;
-  int failures = 0;
-
-  do
+  // Function provided by user @gemi254
+  Serial.printf("Deleting : %s\n", val);
+  File f = SD_MMC.open("/" + String(val));
+  if (!f)
   {
-    int fblen = 0;
-    int foundffd9 = 0;
-    long bp = millis();
-    long mstart = micros();
+    Serial.printf("Failed to open %s\n", val);
+    return;
+  }
 
-    fb = esp_camera_fb_get();
-    if (!fb)
+  if (f.isDirectory())
+  {
+    File file = f.openNextFile();
+    while (file)
     {
-      Serial.println("Camera Capture Failed");
-      failures++;
-    }
-    else
-    {
-      long mdelay = micros() - mstart;
-
-      int get_fail = 0;
-
-      totalp = totalp + millis() - bp;
-      time_in_camera = totalp;
-
-      fblen = fb->len;
-
-      for (int j = 1; j <= 1025; j++)
+      if (file.isDirectory())
       {
-        if (fb->buf[fblen - j] != 0xD9)
-        {
-          // no d9, try next for
-        }
-        else
-        { // Serial.println("Found a D9");
-          if (fb->buf[fblen - j - 1] == 0xFF)
-          { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
-            if (j == 1)
-            {
-              normal_jpg++;
-            }
-            else
-            {
-              extend_jpg++;
-            }
-            foundffd9 = 1;
-            if (Lots_of_Stats)
-            {
-              if (j > 900)
-              { //  rarely happens - sometimes on 2640
-                Serial.print("Frame ");
-                Serial.print(frame_cnt);
-                logfile.print("Frame ");
-                logfile.print(frame_cnt);
-                Serial.print(", Len = ");
-                Serial.print(fblen);
-                logfile.print(", Len = ");
-                logfile.print(fblen);
-                // Serial.print(", Correct Len = "); Serial.print(fblen - j + 1);
-                Serial.print(", Extra Bytes = ");
-                Serial.println(j - 1);
-                logfile.print(", Extra Bytes = ");
-                logfile.println(j - 1);
-                logfile.flush();
-              }
-
-              if (frame_cnt % 100 == 50)
-              {
-                gframe_cnt = frame_cnt;
-                gfblen = fblen;
-                gj = j;
-                gmdelay = mdelay;
-                // Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
-                // logfile.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
-                do_it_now = 1;
-              }
-            }
-            break;
-          }
-        }
-      }
-
-      if (!foundffd9)
-      {
-        bad_jpg++;
-        Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_cnt, fblen);
-        logfile.printf("Bad jpeg, Frame %d, Len = %d\n", frame_cnt, fblen);
-
-        esp_camera_fb_return(fb);
-        failures++;
+        Serial.print("  DIR : ");
+        Serial.println(file.name());
       }
       else
       {
-        break;
-        // count up the useless bytes
+        Serial.print("  FILE: ");
+        Serial.print(file.name());
+        Serial.print("  SIZE: ");
+        Serial.print(file.size());
+        if (SD_MMC.remove(file.name()))
+        {
+          Serial.println(" deleted.");
+        }
+        else
+        {
+          Serial.println(" FAILED.");
+        }
       }
+      file = f.openNextFile();
     }
-
-  } while (failures < 10); // normally leave the loop with a break()
-
-  // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
-  if (failures == 10)
-  {
-    Serial.printf("10 failures");
-    logfile.printf("10 failures");
-    logfile.flush();
-
-    sensor_t *ss = esp_camera_sensor_get();
-    int qual = ss->status.quality;
-    ss->set_quality(ss, qual + 5);
-    camera_quality = qual + 5;
-    Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
-    logfile.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
-    delay(1000);
-
-    avi_frm.start_record = 0;
-    // reboot_now = true;
-  }
-  return fb;
-}
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//  eprom functions  - increment the file_group, so files are always unique
-//
-
-void do_eprom_read()
-{
-
-  eprom_data ed;
-
-  EEPROM.begin(200);
-  EEPROM.get(0, ed);
-
-  if (ed.eprom_good == MagicNumber)
-  {
-    Serial.println("Good settings in the EPROM ");
-    file_group = ed.file_group;
-    file_group++;
-    Serial.print("New File Group ");
-    Serial.println(file_group);
+    f.close();
+    // Remove the dir
+    if (SD_MMC.rmdir("/" + String(val)))
+    {
+      Serial.printf("Dir %s removed\n", val);
+    }
+    else
+    {
+      Serial.println("Remove dir failed");
+    }
   }
   else
   {
-    Serial.println("No settings in EPROM - Starting with File Group 1 ");
-    file_group = 1;
+    // Remove the file
+    if (SD_MMC.remove("/" + String(val)))
+    {
+      Serial.printf("File %s deleted\n", val);
+    }
+    else
+    {
+      Serial.println("Delete failed");
+    }
   }
-  do_eprom_write();
-  file_number = 1;
 }
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-// Make the avi functions
-//
+/*********************************************************************************/
+/*********************** AVI Conversion  *****************************************/
+/*********************************************************************************/
+
 //   start_avi() - open the file and write headers
 //   another_pic_avi() - write one more frame of movie
 //   end_avi() - write the final parameters and close the file
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
 // start_avi - open the files and write in headers
-//
-
 static void start_avi()
 {
 
@@ -774,8 +618,7 @@ static void start_avi()
   time_in_sd = 0;
   time_in_good = 0;
   time_total = 0;
-  // time_in_web1 = 0;
-  // time_in_web2 = 0;
+
   delay_wait_for_sd = 0;
   wait_for_cam = 0;
 
@@ -908,11 +751,6 @@ static void another_save_avi(camera_fb_t *fb)
   avifile.flush();
 
 } // end of another_pic_avi
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//  end_avi writes the index, and closes the files
-//
 
 static void end_avi()
 {
@@ -1075,108 +913,41 @@ static void end_avi()
   logfile.flush();
 }
 
-void the_camera_loop(void *pvParameter);
-void the_sd_loop(void *pvParameter);
-void delete_old_stuff();
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-void setup()
-{
-
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
-
-  pinMode(4, OUTPUT);   // Blinding Disk-Avtive Light
-  digitalWrite(4, LOW); // turn off
-
-  cam_frm.framebuffer_time = 0;
-  cam_frm.current_frame_time = 0;
-  cam_frm.last_frame_time = 0;
-  cam_frm.frame_interval = 0;
-  cam_frm.most_recent_fps = 0.0;
-  cam_frm.most_recent_avg_framesize = 0;
-
-  avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC;
-  avi_frm.speed_up_factor = 1;
-
-  avi_frm.avi_start_time = 0;
-  avi_frm.avi_end_time = 0;
-  avi_frm.start_record = false;
-
-  Serial.println("                                    ");
-  Serial.println("-------------------------------------");
-  Serial.printf("ESP32-CAM-Video-Recorder-junior %s\n", vernum);
-  Serial.println("-------------------------------------");
-
-  do_eprom_read();
-
-  // SD camera init
-  Serial.println("Mounting the SD card ...");
-  esp_err_t card_err = init_sdcard();
-  if (card_err != ESP_OK)
-  {
-    Serial.printf("SD Card init failed with error 0x%x", card_err);
-    // major_fail();
-    return;
-  }
-
-  Serial.println("Try to get parameters from config.txt ...");
-
-  Serial.println("Setting up the camera ...");
-  config_camera();
-
-  Serial.println("Checking SD for available space ...");
-  delete_old_stuff();
-
-  cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024); // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
-  // avi_frm.framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
-  // framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
-
-  Serial.println("Creating the_camera_loop_task");
-
-  wait_for_sd = xSemaphoreCreateBinary(); // xSemaphoreCreateMutex();
-  sd_go = xSemaphoreCreateBinary();       // xSemaphoreCreateMutex();
-  baton = xSemaphoreCreateMutex();
-
-  // prio 6 - higher than the camera loop(), and the streaming
-  xTaskCreatePinnedToCore(the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0); // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
-  delay(100);
-  // prio 4 - higher than the cam_loop(), and the streaming
-  xTaskCreatePinnedToCore(the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1); // prio 4, core 1
-  delay(200);
-
-  // boot_time = millis();
-
-  Serial.println("  End of setup()\n\n");
-}
-
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// the_sd_loop()
 //
-
-void the_sd_loop(void *pvParameter)
+// Writes an uint32_t in Big Endian at current file position
+//
+static void inline print_quartet(unsigned long i, File fd)
 {
 
-  Serial.print("the_sd_loop, core ");
-  Serial.print(xPortGetCoreID());
-  Serial.print(", priority = ");
-  Serial.println(uxTaskPriorityGet(NULL));
-
-  while (1)
-  {
-    xSemaphoreTake(sd_go, portMAX_DELAY); // we wait for camera loop to tell us to go
-    another_save_avi(fb_curr);            // do the actual sd wrte
-    xSemaphoreGive(wait_for_sd);          // tell camera loop we are done
-  }
+  uint8_t y[4];
+  y[0] = i % 0x100;
+  y[1] = (i >> 8) % 0x100;
+  y[2] = (i >> 16) % 0x100;
+  y[3] = (i >> 24) % 0x100;
+  size_t i1_err = fd.write(y, 4);
 }
 
+//
+// Writes 2 uint32_t in Big Endian at current file position
+//
+static void inline print_2quartet(unsigned long i, unsigned long j, File fd)
+{
 
+  uint8_t y[8];
+  y[0] = i % 0x100;
+  y[1] = (i >> 8) % 0x100;
+  y[2] = (i >> 16) % 0x100;
+  y[3] = (i >> 24) % 0x100;
+  y[4] = j % 0x100;
+  y[5] = (j >> 8) % 0x100;
+  y[6] = (j >> 16) % 0x100;
+  y[7] = (j >> 24) % 0x100;
+  size_t i1_err = fd.write(y, 8);
+}
 
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/*********************************************************************************/
+/*********************** Cam Reading and Conversion  *****************************/
+/*********************************************************************************/
 void the_camera_loop(void *pvParameter)
 {
 
@@ -1244,7 +1015,7 @@ void the_camera_loop(void *pvParameter)
       xSemaphoreGive(baton);
       //}
       wait_for_cam += millis() - wait_for_cam_start;
-      xSemaphoreGive(sd_go); // trigger sd write to write first frame
+      xSemaphoreGive(save_current_frame); // trigger sd write to write first frame
 
       ///////////////////  END THE MOVIE //////////////////
     }
@@ -1254,16 +1025,16 @@ void the_camera_loop(void *pvParameter)
       Serial.println("End the Avi");
       restart_now = false;
 
-      xSemaphoreTake(wait_for_sd, portMAX_DELAY);
+      xSemaphoreTake(take_new_frame, portMAX_DELAY);
       esp_camera_fb_return(fb_curr);
 
       frame_cnt++;
       fb_curr = fb_next;
       fb_next = NULL;
 
-      xSemaphoreGive(sd_go); // save final frame of movie
+      xSemaphoreGive(save_current_frame); // save final frame of movie
 
-      xSemaphoreTake(wait_for_sd, portMAX_DELAY); // wait for final frame of movie to be written
+      xSemaphoreTake(take_new_frame, portMAX_DELAY); // wait for final frame of movie to be written
 
       esp_camera_fb_return(fb_curr);
       fb_curr = NULL;
@@ -1299,14 +1070,14 @@ void the_camera_loop(void *pvParameter)
       frame_cnt++;
 
       long delay_wait_for_sd_start = millis();
-      xSemaphoreTake(wait_for_sd, portMAX_DELAY); // make sure sd writer is done
+      xSemaphoreTake(take_new_frame, portMAX_DELAY); // make sure sd writer is done
       delay_wait_for_sd += millis() - delay_wait_for_sd_start;
 
       esp_camera_fb_return(fb_curr);
 
       fb_curr = fb_next; // we will write a frame, and get the camera preparing a new one
 
-      xSemaphoreGive(sd_go); // write the frame in fb_curr
+      xSemaphoreGive(save_current_frame); // write the frame in fb_curr
 
       long wait_for_cam_start = millis();
       fb_next = get_good_jpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
@@ -1350,7 +1121,240 @@ void the_camera_loop(void *pvParameter)
   }
 }
 
-
-void loop()
+//  get_good_jpeg()  - take a picture and make sure it has a good jpeg
+camera_fb_t *get_good_jpeg()
 {
+
+  camera_fb_t *fb;
+
+  long start;
+  int failures = 0;
+
+  do
+  {
+    int fblen = 0;
+    int foundffd9 = 0;
+    long bp = millis();
+    long mstart = micros();
+
+    fb = esp_camera_fb_get();
+    if (!fb)
+    {
+      Serial.println("Camera Capture Failed");
+      failures++;
+    }
+    else
+    {
+      long mdelay = micros() - mstart;
+
+      int get_fail = 0;
+
+      totalp = totalp + millis() - bp;
+      time_in_camera = totalp;
+
+      fblen = fb->len;
+
+      for (int j = 1; j <= 1025; j++)
+      {
+        if (fb->buf[fblen - j] != 0xD9)
+        {
+          // no d9, try next for
+        }
+        else
+        { // Serial.println("Found a D9");
+          if (fb->buf[fblen - j - 1] == 0xFF)
+          { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
+            if (j == 1)
+            {
+              normal_jpg++;
+            }
+            else
+            {
+              extend_jpg++;
+            }
+            foundffd9 = 1;
+            if (Lots_of_Stats)
+            {
+              if (j > 900)
+              { //  rarely happens - sometimes on 2640
+                Serial.print("Frame ");
+                Serial.print(frame_cnt);
+                logfile.print("Frame ");
+                logfile.print(frame_cnt);
+                Serial.print(", Len = ");
+                Serial.print(fblen);
+                logfile.print(", Len = ");
+                logfile.print(fblen);
+                // Serial.print(", Correct Len = "); Serial.print(fblen - j + 1);
+                Serial.print(", Extra Bytes = ");
+                Serial.println(j - 1);
+                logfile.print(", Extra Bytes = ");
+                logfile.println(j - 1);
+                logfile.flush();
+              }
+
+              if (frame_cnt % 100 == 50)
+              {
+                gframe_cnt = frame_cnt;
+                gfblen = fblen;
+                gj = j;
+                gmdelay = mdelay;
+                // Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                // logfile.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                do_it_now = 1;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      if (!foundffd9)
+      {
+        bad_jpg++;
+        Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_cnt, fblen);
+        logfile.printf("Bad jpeg, Frame %d, Len = %d\n", frame_cnt, fblen);
+
+        esp_camera_fb_return(fb);
+        failures++;
+      }
+      else
+      {
+        break;
+        // count up the useless bytes
+      }
+    }
+
+  } while (failures < 10); // normally leave the loop with a break()
+
+  // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
+  if (failures == 10)
+  {
+    Serial.printf("10 failures");
+    logfile.printf("10 failures");
+    logfile.flush();
+
+    sensor_t *ss = esp_camera_sensor_get();
+    int qual = ss->status.quality;
+    ss->set_quality(ss, qual + 5);
+    camera_quality = qual + 5;
+    Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+    logfile.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+    delay(1000);
+
+    avi_frm.start_record = 0;
+    // reboot_now = true;
+  }
+  return fb;
 }
+
+
+
+
+
+
+
+
+//  data structure from here https://github.com/s60sc/ESP32-CAM_MJPEG2SD/blob/master/avi.cpp, extended for ov5640
+
+
+// #include "config.h"
+
+// void read_config_file() {
+
+//   // if there is a config.txt, use it plus defaults
+//   // else use defaults, and create a config.txt
+
+//   // put a file "config.txt" onto SD card, to set parameters different from your hardcoded parameters
+//   // it should look like this - one paramter per line, in the correct order, followed by 2 spaces, and any comments you choose
+//   /*
+//     ~~~ old config.txt file ~~~
+//     desklens  // camera name for files, mdns, etc
+//     11  // camera_framesize 9=svga, 10=xga, 11=hd, 12=sxga, 13=uxga, 14=fhd, 17=qxga, 18=qhd, 21=qsxga
+//     8  // quality 0-63, lower the better, 10 good start, must be higher than "quality config"
+//     11  // camera_framesize config - must be equal or higher than camera_framesize
+//     5  / quality config - high q 0..5, med q 6..10, low q 11+
+//     3  // buffers - 1 is half speed of 3, but you might run out od memory with 3 and camera_framesize > uxga
+//     900  // length of video in seconds
+//     0  // interval - ms between frames - 0 for fastest, or 500 for 2fps, 10000 for 10 sec/frame
+//     1  // speedup - multiply framerate - 1 for realtime, 24 for record at 1fps, play at 24fps or24x
+//     0  // streamdelay - ms between streaming frames - 0 for fast as possible, 500 for 2fps
+//     4  // 0 no internet, 1 get time then shutoff, 2 streaming using wifiman, 3 for use ssid names below default off, 4 names below default on
+//     MST7MDT,M3.2.0/2:00:00,M11.1.0/2:00:00  // timezone - this is mountain time, find timezone here https://sites.google.com/a/usapiens.com/opnode/time-zones
+//     ssid1234  // ssid
+//     mrpeanut  // ssid password
+
+//     ~~~ new config.txt file ~~~
+//     desklens  // camera name
+//     11  // camera_framesize  11=hd
+//     1800  // length of video in seconds
+//     0  // interval - ms between recording frames
+//     1  // speedup - multiply framerate
+//     0  // streamdelay - ms between streaming frames
+//     GMT // timezone
+//     ssid1234  // ssid wifi name
+//     mrpeanut  // ssid password
+//     ~~~
+
+//     Lines above are rigid - do not delete lines, must have 2 spaces after the number or string
+//   */
+
+//   String junk;
+
+//   String cname = "desklens";
+//   int cframesize = 11;
+//   int cquality = 12;
+//   int cframesizeconfig = 13;
+//   int cqualityconfig = 5;
+//   int cbuffersconfig = 4;  //58.9
+//   int clength = 1800;
+//   int cinterval = 0;
+//   int cspeedup = 1;
+//   int cstreamdelay = 0;
+//   int cinternet = 0;
+//   String czone = "GMT";
+
+//   Serial.printf("=========   Data fram config.txt and defaults  =========\n");
+//   Serial.printf("Name %s\n", cname);
+//   logfile.printf("Name %s\n", cname);
+//   Serial.printf("Framesize %d\n", cframesize);
+//   logfile.printf("Framesize %d\n", cframesize);
+//   Serial.printf("Quality %d\n", cquality);
+//   logfile.printf("Quality %d\n", cquality);
+//   Serial.printf("Framesize config %d\n", cframesizeconfig);
+//   logfile.printf("Framesize config%d\n", cframesizeconfig);
+//   Serial.printf("Quality config %d\n", cqualityconfig);
+//   logfile.printf("Quality config%d\n", cqualityconfig);
+//   Serial.printf("Buffers config %d\n", cbuffersconfig);
+//   logfile.printf("Buffers config %d\n", cbuffersconfig);
+//   Serial.printf("Length %d\n", clength);
+//   logfile.printf("Length %d\n", clength);
+//   Serial.printf("Interval %d\n", cinterval);
+//   logfile.printf("Interval %d\n", cinterval);
+//   Serial.printf("Speedup %d\n", cspeedup);
+//   logfile.printf("Speedup %d\n", cspeedup);
+//   Serial.printf("Streamdelay %d\n", cstreamdelay);
+//   logfile.printf("Streamdelay %d\n", cstreamdelay);
+//   Serial.printf("Internet %d\n", cinternet);
+//   logfile.printf("Internet %d\n", cinternet);
+//   Serial.printf("Zone len %d, %s\n", czone.length(), czone.c_str());  //logfile.printf("Zone len %d, %s\n", czone.length(), czone);
+
+//   framesize = cframesize;
+//   quality = cquality;
+//   framesizeconfig = cframesizeconfig;
+//   camera_jpeg_quality = cqualityconfig;
+//   buffersconfig = cbuffersconfig;
+//   avi_frm.avi_length = clength;
+//   cam_frm.frame_interval = cinterval;
+//   avi_frm.speed_up_factor = cspeedup;
+//   stream_delay = cstreamdelay;
+//   configfile = true;
+//   TIMEZONE = czone;
+
+//   cname.toCharArray(devname, cname.length() + 1);
+// }
+
+//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//  delete_old_stuff() - delete oldest files to free diskspace
+//
