@@ -50,14 +50,20 @@ long last_frame_time;
 #define fbs 8  // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
 uint8_t framebuffer_static[fbs * 1024 + 20];
 
+typedef struct Camera_Frame_t
+{
+  uint8_t *framebuffer;
+  int framebuffer_len;
+  unsigned long framebuffer_time;
+} Camera_Frame_t;
 
-// typedef struct Camera_Frame_Buffer_t {
-//   camera_fb_t *current_frame_buffer;
-//   camera_fb_t *fb_next;
-// } Camera_Frame_Buffer_t;
+typedef struct AVI_Frame_t
+{
 
-// Camera_Frame_Buffer_t cam_frame;
+} AVI_Frame_t;
 
+Camera_Frame_t cam_frm;
+AVI_Frame_t avi_frm;
 
 camera_fb_t *fb_curr = NULL;
 camera_fb_t *fb_next = NULL;
@@ -66,18 +72,6 @@ static esp_err_t cam_err;
 float most_recent_fps = 0;
 int most_recent_avg_framesize = 0;
 
-uint8_t *framebuffer;
-uint8_t *framebuffer2;
-
-int framebuffer_len;
-int framebuffer2_len;
-long framebuffer_time = 0;
-long framebuffer2_time = 0;
-
-long frame_start = 0;
-long frame_end = 0;
-long frame_total = 0;
-long frame_average = 0;
 
 long total_frame_data = 0;
 long last_frame_length = 0;
@@ -1068,6 +1062,8 @@ void setup() {
   digitalWrite(4, LOW);  // turn off
 
 
+  cam_frm.framebuffer_time = 0;
+
   Serial.println("                                    ");
   Serial.println("-------------------------------------");
   Serial.printf("ESP32-CAM-Video-Recorder-junior %s\n", vernum);
@@ -1093,8 +1089,8 @@ void setup() {
   Serial.println("Checking SD for available space ...");
   delete_old_stuff();
 
-  framebuffer = (uint8_t *)ps_malloc(512 * 1024);   // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
-  framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024);   // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
+  // avi_frm.framebuffer2 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
   // framebuffer3 = (uint8_t *)ps_malloc(512 * 1024);  // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
 
   Serial.println("Creating the_camera_loop_task");
@@ -1197,11 +1193,11 @@ void the_camera_loop(void *pvParameter) {
 
       wait_for_cam_start = millis();
       fb_next = get_good_jpeg();  // should take nearly zero time due to time spent writing header
-      //if (framebuffer_time < (millis() - 10)){
+      //if (cam_frm.framebuffer_time < (millis() - 10)){
       xSemaphoreTake(baton, portMAX_DELAY);
-      framebuffer_len = fb_next->len;                   // v59.5
-      memcpy(framebuffer, fb_next->buf, fb_next->len);  // v59.5
-      framebuffer_time = millis();                      // v59.5
+      cam_frm.framebuffer_len = fb_next->len;                   // v59.5
+      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len);  // v59.5
+      cam_frm.framebuffer_time = millis();                      // v59.5
       xSemaphoreGive(baton);
       //}
       wait_for_cam += millis() - wait_for_cam_start;
@@ -1269,11 +1265,11 @@ void the_camera_loop(void *pvParameter) {
 
       long wait_for_cam_start = millis();
       fb_next = get_good_jpeg();  // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
-      //if (framebuffer_time < (millis() - 10)){
+      //if (cam_frm.framebuffer_time < (millis() - 10)){
       xSemaphoreTake(baton, portMAX_DELAY);
-      framebuffer_len = fb_next->len;                   // v59.5
-      memcpy(framebuffer, fb_next->buf, fb_next->len);  // v59.5
-      framebuffer_time = millis();                      // v59.5
+      cam_frm.framebuffer_len = fb_next->len;                   // v59.5
+      memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len);  // v59.5
+      cam_frm.framebuffer_time = millis();                      // v59.5
       xSemaphoreGive(baton);
       //}
       wait_for_cam += millis() - wait_for_cam_start;
