@@ -19,8 +19,6 @@ TaskHandle_t the_sd_loop_task;
 static SemaphoreHandle_t take_new_frame;
 static SemaphoreHandle_t save_current_frame;
 
-File avifile;
-File idxfile;
 
 Camera_Frame_t cam_frm;
 AVI_Frame_t avi_frm;
@@ -56,16 +54,6 @@ void do_eprom_read();
 void do_eprom_write();
 
 void aviTask(void *pvParameter);
-
-
-static void start_avi();
-static void another_save_avi(camera_fb_t *fb);
-static void end_avi();
-static void inline print_quartet(unsigned long i, File fd);
-static void inline print_2quartet(unsigned long i, unsigned long j, File fd);
-
 void cameraTask(void *pvParameter);
-camera_fb_t *capGoodJpeg();
-
 
 #endif

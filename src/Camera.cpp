@@ -90,3 +90,84 @@ void configCamera()
         }
     }
 }
+
+
+camera_fb_t *capGoodJpeg(unsigned long *total_pic_cap_time, uint16_t *frame_count, int *camera_quality, int *normal_jpg, int* extend_jpg, int* bad_jpg)
+{
+
+  camera_fb_t *fb;
+  int failures = 0;
+
+  do
+  {
+    int fblen = 0;
+    int foundffd9 = 0;
+    long bp = millis();
+
+    fb = esp_camera_fb_get();
+    if (!fb)
+    {
+      Serial.println("Camera Capture Failed");
+      failures++;
+    }
+    else
+    {
+
+      total_pic_cap_time = total_pic_cap_time + millis() - bp;
+      fblen = fb->len;
+
+      for (int j = 1; j <= 1025; j++)
+      {
+        if (fb->buf[fblen - j] != 0xD9)
+        {
+          // no d9, try next for
+        }
+        else
+        { // Serial.println("Found a D9");
+          if (fb->buf[fblen - j - 1] == 0xFF)
+          { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
+            if (j == 1)
+            {
+              normal_jpg++;
+            }
+            else
+            {
+              extend_jpg++;
+            }
+            foundffd9 = 1;
+            break;
+          }
+        }
+      }
+
+      if (!foundffd9)
+      {
+        bad_jpg++;
+        Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_count, fblen);
+
+        esp_camera_fb_return(fb);
+        failures++;
+      }
+      else
+      {
+        break;
+        // count up the useless bytes
+      }
+    }
+
+  } while (failures < 10); // normally leave the loop with a break()
+
+  // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
+  if (failures == 10)
+  {
+    Serial.printf("10 failures");
+
+    sensor_t *ss = esp_camera_sensor_get();
+    int qual = ss->status.quality;
+    ss->set_quality(ss, qual + 5);
+    camera_quality = &qual + 5;
+    Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+    delay(1000);
+  }
+  return fb;
+}
