@@ -23,8 +23,8 @@ Camera_Frame_t cam_frm;
 AVI_Frame_t avi_frm;
 LOG_AVI_Frame_t log_frm;
 
-camera_fb_t *fb_curr = NULL;
-camera_fb_t *fb_next = NULL;
+// camera_fb_t *fb_curr = NULL;
+// camera_fb_t *fb_next = NULL;
 
 /***********************************************************************************************************************/
 
@@ -188,7 +188,7 @@ void the_sd_loop(void *pvParameter)
   while (1)
   {
     xSemaphoreTake(save_current_frame, portMAX_DELAY); // we wait for camera loop to tell us to go
-    another_save_avi(fb_curr);                         // do the actual sd wrte
+    another_save_avi(cam_frm.current_frame_buffer);                         // do the actual sd wrte
     xSemaphoreGive(take_new_frame);                    // tell camera loop we are done
   }
 }
@@ -567,14 +567,14 @@ void the_camera_loop(void *pvParameter)
 
         cam_frm.frame_count++;
 
-        fb_curr = get_good_jpeg(); // should take zero time
+        cam_frm.current_frame_buffer = get_good_jpeg(); // should take zero time
 
         start_avi();
 
-        fb_next = get_good_jpeg(); // should take nearly zero time due to time spent writing header
+        cam_frm.next_frame_buffer = get_good_jpeg(); // should take nearly zero time due to time spent writing header
 
-        cam_frm.framebuffer_len = fb_next->len;                  // v59.5
-        memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len); // v59.5
+        cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                  // v59.5
+        memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
         // cam_frm.framebuffer_time = millis();                     // v59.5
 
         cam_frm.on_recording = true;
@@ -585,17 +585,17 @@ void the_camera_loop(void *pvParameter)
         /************************** Last frame of Clip ***********************/
 
         xSemaphoreTake(take_new_frame, portMAX_DELAY);
-        esp_camera_fb_return(fb_curr);
+        esp_camera_fb_return(cam_frm.current_frame_buffer);
 
         cam_frm.frame_count++;
-        fb_curr = fb_next;
-        fb_next = NULL;
+        cam_frm.current_frame_buffer = cam_frm.next_frame_buffer;
+        cam_frm.next_frame_buffer = NULL;
 
         xSemaphoreGive(save_current_frame);            // save final frame of movie
         xSemaphoreTake(take_new_frame, portMAX_DELAY); // wait for final frame of movie to be written
 
-        esp_camera_fb_return(fb_curr);
-        fb_curr = NULL;
+        esp_camera_fb_return(cam_frm.current_frame_buffer);
+        cam_frm.current_frame_buffer = NULL;
         Serial.printf("\n******** End the last frame of the clip -> at %d *********\n", millis());
 
         end_avi(); // end the movie
@@ -627,15 +627,15 @@ void the_camera_loop(void *pvParameter)
         long delay_wait_for_sd_start = millis();
         xSemaphoreTake(take_new_frame, portMAX_DELAY); // make sure sd writer is done
 
-        esp_camera_fb_return(fb_curr);
-        fb_curr = fb_next; // we will write a frame, and get the camera preparing a new one
+        esp_camera_fb_return(cam_frm.current_frame_buffer);
+        cam_frm.current_frame_buffer = cam_frm.next_frame_buffer; // we will write a frame, and get the camera preparing a new one
 
-        xSemaphoreGive(save_current_frame); // write the frame in fb_curr
+        xSemaphoreGive(save_current_frame); // write the frame in cam_frm.current_frame_buffer
 
-        fb_next = get_good_jpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
+        cam_frm.next_frame_buffer = get_good_jpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
 
-        cam_frm.framebuffer_len = fb_next->len;                  // v59.5
-        memcpy(cam_frm.framebuffer, fb_next->buf, fb_next->len); // v59.5
+        cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                  // v59.5
+        memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
 
         if (cam_frm.frame_count % 100 == 10)
         {

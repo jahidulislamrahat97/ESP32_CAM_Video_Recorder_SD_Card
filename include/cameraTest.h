@@ -34,20 +34,22 @@ int camera_frame_buffer_count = 3;
 
 typedef struct Camera_Frame_t
 {
-  uint8_t *framebuffer;
-  int framebuffer_len;
-  uint16_t frame_count;
-  unsigned long current_frame_time;
-  unsigned long last_frame_time;
-  int frame_interval;
-  float most_recent_fps;
-  int most_recent_avg_framesize;
+    camera_fb_t *current_frame_buffer = NULL;
+    camera_fb_t *next_frame_buffer = NULL;
+    uint8_t *framebuffer;
+    int framebuffer_len;
+    uint16_t frame_count;
+    unsigned long current_frame_time;
+    unsigned long last_frame_time;
+    int frame_interval;
+    float most_recent_fps;
+    int most_recent_avg_framesize;
 
-  bool on_recording;
+    bool on_recording;
 
-  int bad_jpg;
-  int extend_jpg;
-  int normal_jpg;
+    int bad_jpg;
+    int extend_jpg;
+    int normal_jpg;
 
 } Camera_Frame_t;
 
