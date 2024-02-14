@@ -1,50 +1,33 @@
-#ifndef __SDTEST_H__
-#define __SDTEST_H__
+#include<SDCard.h>
 
-// MicroSD
-#include <Arduino.h>
-#include "driver/sdmmc_host.h"
-#include "driver/sdmmc_defs.h"
-#include "sdmmc_cmd.h"
-#include "esp_vfs_fat.h"
-#include "FS.h"
-#include <SD_MMC.h>
-
-static esp_err_t init_sdcard()
+bool initSD()
 {
-
-    int succ = SD_MMC.begin("/sdcard", true);
-    if (succ)
+    int ret = SD_MMC.begin("/sdcard", true);
+    if (ret)
     {
-        Serial.printf("SD_MMC Begin: %d\n", succ);
+        Serial.printf("SD_MMC Begin: %d\n", ret);
+        
         uint8_t cardType = SD_MMC.cardType();
         Serial.print("SD_MMC Card Type: ");
         if (cardType == CARD_MMC)
-        {
             Serial.println("MMC");
-        }
         else if (cardType == CARD_SD)
-        {
             Serial.println("SDSC");
-        }
         else if (cardType == CARD_SDHC)
-        {
             Serial.println("SDHC");
-        }
         else
-        {
             Serial.println("UNKNOWN");
-        }
 
         uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
         Serial.printf("SD_MMC Card Size: %lluMB\n", cardSize);
+        Serial.printf("Used space: %lluMB\n", SD_MMC.usedBytes() / (1024 * 1024));
     }
     else
     {
-        Serial.printf("Failed to mount SD card VFAT filesystem. \n");
-        Serial.println("Do you have an SD Card installed?");
+        Serial.println("Failed to mount SD card / Do you installed the SD Card?");
+        return false;
     }
-    return ESP_OK;
+    return true;
 }
 
 void listDir(const char *dirname, uint8_t levels)
@@ -213,5 +196,3 @@ void delete_old_stuff()
         }
     }
 }
-
-#endif
