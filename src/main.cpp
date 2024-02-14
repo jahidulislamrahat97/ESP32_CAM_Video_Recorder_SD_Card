@@ -1,60 +1,9 @@
 #include <Arduino.h>
 
-#include "cameraTest.h"
-#include "aviTest.h"
-#include "sdTest.h"
-
-#include <stdio.h>
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-#include <EEPROM.h>
-
-TaskHandle_t the_camera_loop_task;
-TaskHandle_t the_sd_loop_task;
-
-static SemaphoreHandle_t take_new_frame;
-static SemaphoreHandle_t save_current_frame;
-
-File avifile;
-File idxfile;
-
-Camera_Frame_t cam_frm;
-AVI_Frame_t avi_frm;
-LOG_AVI_Frame_t log_frm;
-
-// camera_fb_t *fb_curr = NULL;
-// camera_fb_t *fb_next = NULL;
-
-/***********************************************************************************************************************/
-
-// int avi_frm.avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
-// int cam_frm.frame_interval = 0;   // record at full speed
-// int avi_frm.speed_up_factor = 1;  // play at realtime
-
-int MagicNumber = 12; // EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
+#include "main.h"
 
 
-int file_number = 0;
-int file_group = 0;
 
-void do_eprom_read();
-void do_eprom_write();
-
-void the_sd_loop(void *pvParameter);
-static esp_err_t init_sdcard();
-void listDir(const char *dirname, uint8_t levels);
-void deleteFolderOrFile(const char *val);
-void delete_old_stuff();
-
-static void start_avi();
-static void another_save_avi(camera_fb_t *fb);
-static void end_avi();
-static void inline print_quartet(unsigned long i, File fd);
-static void inline print_2quartet(unsigned long i, unsigned long j, File fd);
-
-void the_camera_loop(void *pvParameter);
-camera_fb_t *get_good_jpeg();
 
 void setup()
 {
@@ -64,20 +13,16 @@ void setup()
   pinMode(4, OUTPUT);   // Blinding Disk-Avtive Light
   digitalWrite(4, LOW); // turn off
 
-  // cam_frm.framebuffer_time = 0;
   cam_frm.current_frame_time = 0;
   cam_frm.last_frame_time = 0;
   cam_frm.frame_interval = 0;
   cam_frm.most_recent_fps = 0.0;
   cam_frm.most_recent_avg_framesize = 0;
-
-  // cam_frm.start_record = false;
-  // cam_frm.end_record = false;
   cam_frm.on_recording = false;
+
 
   avi_frm.avi_length = MAX_VIDEO_LENGTH_SEC;
   avi_frm.speed_up_factor = 1;
-
   avi_frm.avi_start_time = 0;
   avi_frm.avi_end_time = 0;
 
@@ -88,34 +33,30 @@ void setup()
 
   do_eprom_read();
 
-  // SD camera init
+  // SD Card init
   Serial.println("Mounting the SD card ...");
-  esp_err_t card_err = init_sdcard();
-  if (card_err != ESP_OK)
+  if (!initSD())
   {
-    Serial.printf("SD Card init failed with error 0x%x", card_err);
+    Serial.printf("SD Card init failed");
     return;
   }
 
-  Serial.println("Try to get parameters from config.txt ...");
-
+    // Camera init
   Serial.println("Setting up the camera ...");
-  config_camera();
+  configCamera();
 
-  Serial.println("Checking SD for available space ...");
-  delete_old_stuff();
 
   cam_frm.framebuffer = (uint8_t *)ps_malloc(512 * 1024); // buffer to store a jpg in motion // needs to be larger for big frames from ov5640
 
   take_new_frame = xSemaphoreCreateBinary();
   save_current_frame = xSemaphoreCreateBinary();
 
-  xTaskCreatePinnedToCore(the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0); // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
+  xTaskCreatePinnedToCore(cameraTask, "camera_task", 3000, NULL, 6, &the_camera_loop_task, 0);
   delay(100);
-  xTaskCreatePinnedToCore(the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1); // prio 4, core 1
+  xTaskCreatePinnedToCore(aviTask, "avi_task", 2000, NULL, 4, &the_sd_loop_task, 1);
   delay(200);
 
-  Serial.println("  End of setup()\n\n");
+  Serial.println("End of setup() \n\n");
 }
 
 void loop()
@@ -177,7 +118,7 @@ void do_eprom_read()
 /************************    SD Card    *******************************************/
 /*********************************************************************************/
 
-void the_sd_loop(void *pvParameter)
+void aviTask(void *pvParameter)
 {
 
   Serial.print("the_sd_loop, core ");
@@ -538,7 +479,7 @@ static void inline print_2quartet(unsigned long i, unsigned long j, File fd)
 /*********************************************************************************/
 /*********************** Cam Reading and Conversion  *****************************/
 /*********************************************************************************/
-void the_camera_loop(void *pvParameter)
+void cameraTask(void *pvParameter)
 {
   Serial.print("the camera loop, core ");
   Serial.print(xPortGetCoreID());
@@ -567,11 +508,11 @@ void the_camera_loop(void *pvParameter)
 
         cam_frm.frame_count++;
 
-        cam_frm.current_frame_buffer = get_good_jpeg(); // should take zero time
+        cam_frm.current_frame_buffer = capGoodJpeg(); // should take zero time
 
         start_avi();
 
-        cam_frm.next_frame_buffer = get_good_jpeg(); // should take nearly zero time due to time spent writing header
+        cam_frm.next_frame_buffer = capGoodJpeg(); // should take nearly zero time due to time spent writing header
 
         cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                  // v59.5
         memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
@@ -632,7 +573,7 @@ void the_camera_loop(void *pvParameter)
 
         xSemaphoreGive(save_current_frame); // write the frame in cam_frm.current_frame_buffer
 
-        cam_frm.next_frame_buffer = get_good_jpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
+        cam_frm.next_frame_buffer = capGoodJpeg(); // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
 
         cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                  // v59.5
         memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
@@ -665,8 +606,8 @@ void the_camera_loop(void *pvParameter)
   }
 }
 
-//  get_good_jpeg()  - take a picture and make sure it has a good jpeg
-camera_fb_t *get_good_jpeg()
+//  capGoodJpeg()  - take a picture and make sure it has a good jpeg
+camera_fb_t *capGoodJpeg()
 {
 
   camera_fb_t *fb;
