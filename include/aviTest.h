@@ -10,6 +10,13 @@ struct frameSizeStruct {
   uint8_t frameHeight[2];
 };
 
+
+#define BUFFSIZE 512
+// https://github.com/espressif/esp32-camera/issues/182
+#define fbs 8 // was 64 -- how many kb of static ram for psram -> sram buffer for sd write
+uint8_t framebuffer_static[fbs * 1024 + 20];
+uint8_t buf[BUFFSIZE];
+
 static const frameSizeStruct frameSizeData[] = {
   { { 0x60, 0x00 }, { 0x60, 0x00 } },  // FRAMESIZE_96X96,    // 96x96
   { { 0xA0, 0x00 }, { 0x78, 0x00 } },  // FRAMESIZE_QQVGA,    // 160x120
@@ -62,14 +69,23 @@ const int avi_header[AVIOFFSET] PROGMEM = {
 
 typedef struct AVI_Frame_t
 {
+  char avi_file_name[100];
   int avi_length;
   unsigned long avi_start_time;
   unsigned long avi_end_time;
   int speed_up_factor;
-
+  unsigned long movi_size;
+  unsigned long idx_offset;
 } AVI_Frame_t;
 
+typedef struct LOG_AVI_Frame_t
+{
 
-
+  uint32_t total_frame_len = 0;
+  uint32_t total_clip_process_time;
+  uint32_t elapsedms;
+  unsigned long total_pic_cap_time;   // may be total picture
+  unsigned long total_pic_write_time; // may be total wait time
+} LOG_AVI_Frame_t;
 
 #endif

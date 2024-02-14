@@ -36,7 +36,7 @@ typedef struct Camera_Frame_t
 {
   uint8_t *framebuffer;
   int framebuffer_len;
-  unsigned long framebuffer_time;
+  uint16_t frame_count;
   unsigned long current_frame_time;
   unsigned long last_frame_time;
   int frame_interval;
@@ -45,16 +45,18 @@ typedef struct Camera_Frame_t
 
   bool on_recording;
 
+  int bad_jpg;
+  int extend_jpg;
+  int normal_jpg;
+
 } Camera_Frame_t;
 
 
 static void config_camera()
 {
-
-    camera_config_t config;
-
     Serial.println("config camera");
 
+    camera_config_t config;
     config.ledc_channel = LEDC_CHANNEL_0;
     config.ledc_timer = LEDC_TIMER_0;
     config.pin_d0 = Y2_GPIO_NUM;
@@ -73,29 +75,17 @@ static void config_camera()
     config.pin_sccb_scl = SIOC_GPIO_NUM; //updated
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-
     config.xclk_freq_hz = 20000000; // 10000000 or 20000000 -- 100 is faster with v1.04  // 200 is faster with v1.06 // 16500000 is an option
-
     config.pixel_format = PIXFORMAT_JPEG;
     // config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
-
-    //   Serial.printf("Frame config %d, quality config %d, buffers config %d\n", camera_frame_size, camera_jpeg_quality, camera_frame_buffer_count);
     // config.frame_size = (framesize_t)camera_frame_size;
     config.frame_size = FRAMESIZE_UXGA;
-    //   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-    //   config.fb_location = CAMERA_FB_IN_PSRAM;
+    // config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+    // config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = camera_jpeg_quality;
     config.fb_count = camera_frame_buffer_count;
-
-    // https://github.com/espressif/esp32-camera/issues/357#issuecomment-1047086477
-    // config.grab_mode      = CAMERA_GRAB_LATEST;
-
-    // if (Lots_of_Stats)
-    // {
-    //     Serial.printf("Before camera config ...");
-    //     Serial.printf("Internal Total heap %d, internal Free Heap %d, ", ESP.getHeapSize(), ESP.getFreeHeap());
-    //     Serial.printf("SPIRam Total heap   %d, SPIRam Free Heap   %d\n", ESP.getPsramSize(), ESP.getFreePsram());
-    // }
+    // config.grab_mode      = CAMERA_GRAB_LATEST; // https://github.com/espressif/esp32-camera/issues/357#issuecomment-1047086477
+    
 
     esp_err_t cam_err = ESP_FAIL;
     int attempt = 5;
@@ -112,23 +102,14 @@ static void config_camera()
         }
     }
 
-    // if (Lots_of_Stats)
-    // {
-    //     Serial.printf("After  camera config ...");
-    //     Serial.printf("Internal Total heap %d, internal Free Heap %d, ", ESP.getHeapSize(), ESP.getFreeHeap());
-    //     Serial.printf("SPIRam Total heap   %d, SPIRam Free Heap   %d\n", ESP.getPsramSize(), ESP.getFreePsram());
-    // }
-
     if (cam_err != ESP_OK)
     {
-        // major_fail();
         Serial.printf("Camera init failed with error 0x%x", cam_err);
     }
 
     sensor_t *ss = esp_camera_sensor_get();
-
-    /// ss->set_hmirror(ss, 1);        // 0 = disable , 1 = enable
-    /// ss->set_vflip(ss, 1);          // 0 = disable , 1 = enable
+    // ss->set_hmirror(ss, 1);        // 0 = disable , 1 = enable
+    // ss->set_vflip(ss, 1);          // 0 = disable , 1 = enable
 
     Serial.printf("\nCamera started correctly, Type is %x (hex) of 9650, 7725, 2640, 3660, 5640\n\n", ss->id.PID);
 
@@ -142,10 +123,8 @@ static void config_camera()
     {
         ss->set_hmirror(ss, 0); // 0 = disable , 1 = enable
     }
-
     ss->set_quality(ss, camera_quality);
     ss->set_framesize(ss, (framesize_t)camera_framesize);
-
     ss->set_brightness(ss, 1);  // up the blightness just a bit
     ss->set_saturation(ss, -2); // lower the saturation
 

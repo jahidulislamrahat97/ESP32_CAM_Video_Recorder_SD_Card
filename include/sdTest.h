@@ -43,16 +43,12 @@ static esp_err_t init_sdcard()
     {
         Serial.printf("Failed to mount SD card VFAT filesystem. \n");
         Serial.println("Do you have an SD Card installed?");
-        Serial.println("Check pin 12 and 13, not grounded, or grounded with 10k resistors!\n\n");
-        // major_fail();
     }
-
     return ESP_OK;
 }
 
 void listDir(const char *dirname, uint8_t levels)
 {
-
     Serial.printf("Listing directory: %s\n", "/");
 
     File root = SD_MMC.open("/");
