@@ -156,6 +156,8 @@ void cameraTask(void *pvParameter)
       {
         /************************** 1st frame of Clip ***********************/
 
+        digitalWrite(4, HIGH);
+
         avi_frm.avi_start_time = millis();
         Serial.printf("\n******** Start the 1st frame of the clip -> at %d *********\n", avi_frm.avi_start_time);
         Serial.printf("Framesize %d, camera_quality %d, length %d seconds\n\n", camera_framesize, camera_quality, avi_frm.avi_length);
@@ -208,6 +210,8 @@ void cameraTask(void *pvParameter)
         cam_frm.on_recording = false;
         Take_New_Shot = false;
         cam_frm.frame_count = 0;
+        
+        digitalWrite(4, LOW);
       }
       else if (cam_frm.frame_count > 0 && cam_frm.on_recording)
       {

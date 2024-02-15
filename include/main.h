@@ -5,7 +5,7 @@
 #include "config.h"
 #include "Camera.h"
 #include "SDCard.h"
-#include "aviTest.h"
+#include "AVI.h"
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
@@ -31,10 +31,6 @@ bool Take_New_Shot = true;
 
 /***********************************************************************************************************************/
 
-// int avi_frm.avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
-// int cam_frm.frame_interval = 0;   // record at full speed
-// int avi_frm.speed_up_factor = 1;  // play at realtime
-
 int MagicNumber = 12; // EEPORM purpose    // change this number to reset the eprom in your esp32 for file numbers
 
 
@@ -57,3 +53,7 @@ void aviTask(void *pvParameter);
 void cameraTask(void *pvParameter);
 
 #endif
+
+// int avi_frm.avi_length = 1800;    // how long a movie in seconds -- 1800 sec = 30 min
+// int cam_frm.frame_interval = 0;   // record at full speed
+// int avi_frm.speed_up_factor = 1;  // play at realtime

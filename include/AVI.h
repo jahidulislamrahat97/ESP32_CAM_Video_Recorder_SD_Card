@@ -1,5 +1,5 @@
-#ifndef __AVITEST_H__
-#define __AVITEST_H__
+#ifndef __AVI_H__
+#define __AVI_H__
 
 #include <Arduino.h>
 #include <Camera.h>
