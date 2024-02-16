@@ -23,14 +23,13 @@ void configCamera()
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000; // 10000000 or 20000000 -- 100 is faster with v1.04  // 200 is faster with v1.06 // 16500000 is an option
     config.pixel_format = PIXFORMAT_JPEG;
-    // config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
-    // config.frame_size = (framesize_t)camera_frame_size;
     config.frame_size = FRAMESIZE_UXGA;
+    // config.grab_mode      = CAMERA_GRAB_LATEST; // https://github.com/espressif/esp32-camera/issues/357#issuecomment-1047086477
     // config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
     // config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = CAMERA_JPEG_QUALITY;
     config.fb_count = CAMERA_FRAME_BUFFER_COUNT;
-    // config.grab_mode      = CAMERA_GRAB_LATEST; // https://github.com/espressif/esp32-camera/issues/357#issuecomment-1047086477
+    
 
     esp_err_t cam_err = ESP_FAIL;
     int attempt = 5;
@@ -90,82 +89,162 @@ void configCamera()
     }
 }
 
-camera_fb_t *capGoodJpeg(unsigned long *total_pic_cap_time, uint16_t *frame_count, int *camera_quality, int *normal_jpg, int *extend_jpg, int *bad_jpg)
+// camera_fb_t *capGoodJpeg(unsigned long *total_pic_cap_time, uint16_t *frame_count, int *camera_quality, int *normal_jpg, int *extend_jpg, int *bad_jpg)
+// {
+
+//     camera_fb_t *fb;
+//     int failures = 0;
+
+//     do
+//     {
+//         int fblen = 0;
+//         int foundffd9 = 0;
+//         long bp = millis();
+
+//         fb = esp_camera_fb_get();
+//         if (!fb)
+//         {
+//             Serial.println("Camera Capture Failed");
+//             failures++;
+//         }
+//         else
+//         {
+
+//             total_pic_cap_time = total_pic_cap_time + millis() - bp;
+//             fblen = fb->len;
+
+//             for (int j = 1; j <= 1025; j++)
+//             {
+//                 if (fb->buf[fblen - j] != 0xD9)
+//                 {
+//                     // no d9, try next for
+//                 }
+//                 else
+//                 { // Serial.println("Found a D9");
+//                     if (fb->buf[fblen - j - 1] == 0xFF)
+//                     { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
+//                         if (j == 1)
+//                         {
+//                             normal_jpg++;
+//                         }
+//                         else
+//                         {
+//                             extend_jpg++;
+//                         }
+//                         foundffd9 = 1;
+//                         break;
+//                     }
+//                 }
+//             }
+
+//             if (!foundffd9)
+//             {
+//                 bad_jpg++;
+//                 Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_count, fblen);
+
+//                 esp_camera_fb_return(fb);
+//                 failures++;
+//             }
+//             else
+//             {
+//                 break;
+//                 // count up the useless bytes
+//             }
+//         }
+
+//     } while (failures < 10); // normally leave the loop with a break()
+
+//     // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
+//     if (failures == 10)
+//     {
+//         Serial.printf("10 failures");
+
+//         sensor_t *ss = esp_camera_sensor_get();
+//         int qual = ss->status.quality;
+//         ss->set_quality(ss, qual + 5);
+//         camera_quality = &qual + 5;
+//         Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+//         delay(1000);
+//     }
+//     return fb;
+// }
+
+camera_fb_t *capGoodJpeg(Camera_Frame_t &cam_frm, unsigned long *total_pic_cap_time, int *camera_quality)
 {
 
-    camera_fb_t *fb;
-    int failures = 0;
+  camera_fb_t *fb;
+  int failures = 0;
 
-    do
+  do
+  {
+    int fblen = 0;
+    int foundffd9 = 0;
+    long bp = millis();
+
+    fb = esp_camera_fb_get();
+    if (!fb)
     {
-        int fblen = 0;
-        int foundffd9 = 0;
-        long bp = millis();
+      Serial.println("Camera Capture Failed");
+      failures++;
+    }
+    else
+    {
 
-        fb = esp_camera_fb_get();
-        if (!fb)
+      total_pic_cap_time = total_pic_cap_time + millis() - bp;
+      fblen = fb->len;
+
+      for (int j = 1; j <= 1025; j++)
+      {
+        if (fb->buf[fblen - j] != 0xD9)
         {
-            Serial.println("Camera Capture Failed");
-            failures++;
+          // no d9, try next for
         }
         else
-        {
-
-            total_pic_cap_time = total_pic_cap_time + millis() - bp;
-            fblen = fb->len;
-
-            for (int j = 1; j <= 1025; j++)
+        { // Serial.println("Found a D9");
+          if (fb->buf[fblen - j - 1] == 0xFF)
+          { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
+            if (j == 1)
             {
-                if (fb->buf[fblen - j] != 0xD9)
-                {
-                    // no d9, try next for
-                }
-                else
-                { // Serial.println("Found a D9");
-                    if (fb->buf[fblen - j - 1] == 0xFF)
-                    { // Serial.print("Found the FFD9, junk is "); Serial.println(j);
-                        if (j == 1)
-                        {
-                            normal_jpg++;
-                        }
-                        else
-                        {
-                            extend_jpg++;
-                        }
-                        foundffd9 = 1;
-                        break;
-                    }
-                }
-            }
-
-            if (!foundffd9)
-            {
-                bad_jpg++;
-                Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_count, fblen);
-
-                esp_camera_fb_return(fb);
-                failures++;
+              cam_frm.normal_jpg++;
             }
             else
             {
-                break;
-                // count up the useless bytes
+              cam_frm.extend_jpg++;
             }
+            foundffd9 = 1;
+            break;
+          }
         }
+      }
 
-    } while (failures < 10); // normally leave the loop with a break()
+      if (!foundffd9)
+      {
+        cam_frm.bad_jpg++;
+        Serial.printf("Bad jpeg, Frame %d, Len = %d \n", cam_frm.frame_count, fblen);
 
-    // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
-    if (failures == 10)
-    {
-        Serial.printf("10 failures");
-
-        sensor_t *ss = esp_camera_sensor_get();
-        int qual = ss->status.quality;
-        ss->set_quality(ss, qual + 5);
-        camera_quality = &qual + 5;
-        Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
-        delay(1000);
+        esp_camera_fb_return(fb);
+        failures++;
+      }
+      else
+      {
+        break;
+        // count up the useless bytes
+      }
     }
-    return fb;
+
+  } while (failures < 10); // normally leave the loop with a break()
+
+  // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
+  if (failures == 10)
+  {
+    Serial.printf("10 failures");
+
+    sensor_t *ss = esp_camera_sensor_get();
+    int qual = ss->status.quality;
+    ss->set_quality(ss, qual + 5);
+    camera_quality = &qual + 5;
+    Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+    delay(1000);
+  }
+  return fb;
 }

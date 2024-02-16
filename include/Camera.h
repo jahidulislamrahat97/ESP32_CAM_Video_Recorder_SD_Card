@@ -6,6 +6,7 @@
 #include "sensor.h"
 #include "esp_log.h"
 #include "esp_system.h"
+// #include "AVI.h" 
 
 // #include "config.h"
 
@@ -63,8 +64,9 @@ typedef struct Camera_Frame_t
 
 
 void configCamera();
-camera_fb_t *capGoodJpeg(unsigned long *total_pic_cap_time, uint16_t *frame_count, int *camera_quality, int *normal_jpg, int* extend_jpg, int* bad_jpg);
-
+// camera_fb_t *capGoodJpeg(unsigned long *total_pic_cap_time, uint16_t *frame_count, int *camera_quality, int *normal_jpg, int* extend_jpg, int* bad_jpg);
+// camera_fb_t *capGoodJpeg(Camera_Frame_t &cam_frm, LOG_AVI_Frame_t &log_frm);
+camera_fb_t *capGoodJpeg(Camera_Frame_t &cam_frm, unsigned long *total_pic_cap_time, int *camera_quality);
 
 
 //  capGoodJpeg()  - take a picture and make sure it has a good jpeg

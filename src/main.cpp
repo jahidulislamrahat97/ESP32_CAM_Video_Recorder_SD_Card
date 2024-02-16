@@ -110,7 +110,7 @@ void do_eprom_read()
 }
 
 /*********************************************************************************/
-/************************    SD Card    *******************************************/
+/************************    AVI Task   ******************************************/
 /*********************************************************************************/
 
 void aviTask(void *pvParameter)
@@ -131,7 +131,7 @@ void aviTask(void *pvParameter)
 }
 
 /*********************************************************************************/
-/*********************** Cam Reading and Conversion  *****************************/
+/*********************** Camera Task  ********************************************/
 /*********************************************************************************/
 void cameraTask(void *pvParameter)
 {
@@ -164,18 +164,13 @@ void cameraTask(void *pvParameter)
 
         cam_frm.frame_count++;
 
-        // cam_frm.current_frame_buffer = capGoodJpeg(); // should take zero time
-        cam_frm.current_frame_buffer = capGoodJpeg(&log_frm.total_pic_cap_time, &cam_frm.frame_count, &camera_quality, &cam_frm.normal_jpg, &cam_frm.extend_jpg, &cam_frm.bad_jpg);
-        // start_avi();
+        cam_frm.current_frame_buffer = capGoodJpeg(cam_frm, &log_frm.total_pic_cap_time, &camera_quality);
         start_avi(cam_frm, avi_frm, log_frm, camera_framesize);
 
-        // cam_frm.next_frame_buffer = capGoodJpeg(); // should take nearly zero time due to time spent writing header
-        cam_frm.next_frame_buffer = capGoodJpeg(&log_frm.total_pic_cap_time, &cam_frm.frame_count, &camera_quality, &cam_frm.normal_jpg, &cam_frm.extend_jpg, &cam_frm.bad_jpg);
-
+        cam_frm.next_frame_buffer = capGoodJpeg(cam_frm, &log_frm.total_pic_cap_time, &camera_quality);
         cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                                    // v59.5
         memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
-        // cam_frm.framebuffer_time = millis();                     // v59.5
-
+        
         cam_frm.on_recording = true;
         xSemaphoreGive(save_current_frame); // trigger sd write to write first frame
       }
@@ -210,7 +205,7 @@ void cameraTask(void *pvParameter)
         cam_frm.on_recording = false;
         Take_New_Shot = false;
         cam_frm.frame_count = 0;
-        
+
         digitalWrite(4, LOW);
       }
       else if (cam_frm.frame_count > 0 && cam_frm.on_recording)
@@ -223,7 +218,6 @@ void cameraTask(void *pvParameter)
           delay(cam_frm.frame_interval - (cam_frm.current_frame_time - cam_frm.last_frame_time)); // delay for timelapse
         }
         cam_frm.last_frame_time = millis();
-
         cam_frm.frame_count++;
 
         long delay_wait_for_sd_start = millis();
@@ -234,8 +228,7 @@ void cameraTask(void *pvParameter)
 
         xSemaphoreGive(save_current_frame); // write the frame in cam_frm.current_frame_buffer
 
-        cam_frm.next_frame_buffer = capGoodJpeg(&log_frm.total_pic_cap_time, &cam_frm.frame_count, &camera_quality, &cam_frm.normal_jpg, &cam_frm.extend_jpg, &cam_frm.bad_jpg);
-
+        cam_frm.next_frame_buffer =capGoodJpeg(cam_frm, &log_frm.total_pic_cap_time, &camera_quality);
         cam_frm.framebuffer_len = cam_frm.next_frame_buffer->len;                                    // v59.5
         memcpy(cam_frm.framebuffer, cam_frm.next_frame_buffer->buf, cam_frm.next_frame_buffer->len); // v59.5
 
